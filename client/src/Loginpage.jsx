@@ -36,7 +36,7 @@ export default function LoginPage({ onLogin }) {
   return (
     <div className="login-page">
       <form className="login-card" onSubmit={submit}>
-        <div className="login-brand"><Aperture size={20} /><span>IMAGERY</span></div>
+        <div className="login-brand"><Aperture size={22} /><span>IMAGINARY</span></div>
         <p className="login-subtitle">Sign in to your workspace</p>
         <label className="dialog-label">Username or email
           <input autoFocus value={identifier} onChange={(event) => setIdentifier(event.target.value)} placeholder="e.g. admin001 or you@company.com" />

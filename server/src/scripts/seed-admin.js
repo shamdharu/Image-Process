@@ -12,16 +12,16 @@ const USERNAME = 'admin001';
 const EMAIL = 'admin@gmail.com';
 const PASSWORD = process.env.ADMIN_SEED_PASSWORD || 'ChangeMe123!';
 
-async function main() {
+export async function seedAdmin() {
   const passwordHash = hashPassword(PASSWORD);
   const [[existing]] = await pool.query('SELECT id FROM User WHERE username = ? OR email = ?', [USERNAME, EMAIL]);
 
   if (existing) {
     await pool.query('UPDATE User SET username = ?, email = ?, password_hash = ?, role = ? WHERE id = ?', [USERNAME, EMAIL, passwordHash, 'admin', existing.id]);
-    console.log(`Updated existing admin (id ${existing.id}).`);
+    console.log(`[seed-admin] Updated existing admin (id ${existing.id}).`);
   } else {
     const [result] = await pool.query('INSERT INTO User (username, email, password_hash, role) VALUES (?, ?, ?, ?)', [USERNAME, EMAIL, passwordHash, 'admin']);
-    console.log(`Created admin (id ${result.insertId}).`);
+    console.log(`[seed-admin] Created admin (id ${result.insertId}).`);
   }
 
   console.log('----------------------------------------');
@@ -30,10 +30,14 @@ async function main() {
   console.log(`password: ${PASSWORD}`);
   console.log('----------------------------------------');
   console.log('Log in with either the username or the email.');
-  process.exit(0);
 }
 
-main().catch((error) => {
-  console.error('Seed failed:', error.message);
-  process.exit(1);
-});
+// Run directly if executed via: node src/scripts/seed-admin.js
+if (import.meta.url === `file://${process.argv[1]}`) {
+  seedAdmin()
+    .then(() => process.exit(0))
+    .catch((error) => {
+      console.error('Seed failed:', error.message);
+      process.exit(1);
+    });
+}

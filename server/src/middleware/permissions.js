@@ -2,13 +2,16 @@ import { pool } from '../db.js';
 
 // Mirrors PERMISSION_LEVELS in App.jsx's CreateUserDialog.
 // 'manage' includes everything 'edit' includes, etc.
+// 'image.edit' covers editing an image's own details (currently its document id).
+// It is intentionally part of both 'edit' and 'manage': it is not destructive and
+// the uploader already controls the name the image is filed under.
 // Exported so /api/me/permissions can hand the client the resolved capability
 // list instead of it re-deriving one from `level` (the two tables drifting apart
 // is exactly how the "view only can still download" bug happened).
 export const LEVEL_PERMISSIONS = {
   view: ['view'],
-  edit: ['view', 'download', 'upload'],
-  manage: ['view', 'download', 'upload', 'image.delete', 'category.delete', 'category.create', 'category.edit'],
+  edit: ['view', 'download', 'upload', 'image.edit'],
+  manage: ['view', 'download', 'upload', 'image.edit', 'image.delete', 'category.delete', 'category.create', 'category.edit'],
 };
 
 async function categoryIdForImage(imageId) {

@@ -4,6 +4,7 @@ import multer from 'multer';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import sharp from 'sharp';
 import { pool } from './db.js';
@@ -11,8 +12,11 @@ import { attachUser, requireAuth } from './middleware/auth.js';
 import { requirePermission, LEVEL_PERMISSIONS } from './middleware/permissions.js';
 import { authRouter } from './routes/auth.js';
 import { usersRouter } from './routes/users.js';
+import { aiRouter } from './routes/ai.js';
 import { categoryPath, ensureVariantFolders, storageRoot } from './services/storage.js';
 import { enqueueImageJob } from './services/worker.js';
+const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(serverDirectory, '../../.env') });
 dotenv.config();
 const app = express();
 const port = Number(process.env.PORT || 4000);
@@ -24,6 +28,27 @@ async function ensureCategoryParentColumn() {
     await pool.query('ALTER TABLE Category ADD COLUMN parent_id BIGINT NULL AFTER number');
     await pool.query('ALTER TABLE Category ADD CONSTRAINT category_parent_fk FOREIGN KEY (parent_id) REFERENCES Category(id) ON DELETE SET NULL');
   }
+}
+
+// Document ids are an optional per-image business reference (for example
+// DOC-2024-001). They can be supplied at upload time or added/corrected later, so
+// the column has to exist for databases created before this feature too. UNIQUE
+// keeps one document id pointing at exactly one image; MySQL still permits many
+// NULLs, which is how "no document id yet" is represented.
+async function ensureImageDocumentIdColumn() {
+  const [[table]] = await pool.query("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'Image'");
+  if (!table) return;
+  const [[column]] = await pool.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'Image' AND COLUMN_NAME = 'document_id'");
+  if (!column) await pool.query('ALTER TABLE Image ADD COLUMN document_id VARCHAR(120) NULL AFTER original_name');
+  const [[index]] = await pool.query("SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'Image' AND INDEX_NAME = 'image_document_id'");
+  if (!index) await pool.query('ALTER TABLE Image ADD UNIQUE KEY image_document_id (document_id)');
+}
+
+// Blank/whitespace document ids are stored as NULL so any number of images can
+// go without one, and the value is capped at the column width.
+function normalizeDocumentId(value) {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return trimmed ? trimmed.slice(0, 120) : null;
 }
 
 // User accounts + per-category permission grants.
@@ -102,6 +127,7 @@ app.use(express.json());
 app.use(attachUser);
 app.use(authRouter);
 app.use(usersRouter);
+app.use(aiRouter);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 app.get('/api/me', (req, res) => res.json(req.user || null));
@@ -220,6 +246,25 @@ app.delete('/api/categories/:categoryId', requirePermission('category.delete'), 
 
 app.get('/api/images', requirePermission('view'), async (req, res) => { const categoryId = Number(req.query.categoryId || 1); const [rows] = await pool.query('SELECT i.*, c.name AS category_name, u.username AS uploader FROM Image i JOIN Category c ON c.id = i.category_id LEFT JOIN User u ON u.id = i.uploaded_by WHERE i.category_id = ? ORDER BY i.created_at DESC', [categoryId]); res.json(rows); });
 
+// A document id can be given while uploading (POST /api/uploads) or added and
+// corrected afterwards, which is what this endpoint is for. The permission
+// middleware resolves the image's own category, so the caller needs 'edit' - the
+// level that already carries 'image.edit' - or 'manage'/admin on that folder.
+app.patch('/api/images/:imageId', requirePermission('image.edit'), async (req, res) => {
+  const imageId = Number(req.params.imageId);
+  if (!Number.isInteger(imageId) || imageId <= 0) return res.status(400).json({ error: 'Invalid image id' });
+  const [[image]] = await pool.query('SELECT id FROM Image WHERE id = ?', [imageId]);
+  if (!image) return res.sendStatus(404);
+  if (!Object.prototype.hasOwnProperty.call(req.body || {}, 'documentId')) return res.status(400).json({ error: 'documentId is required' });
+  const documentId = normalizeDocumentId(req.body.documentId);
+  if (documentId) {
+    const [[documentTaken]] = await pool.query('SELECT id FROM Image WHERE document_id = ? AND id <> ?', [documentId, imageId]);
+    if (documentTaken) return res.status(409).json({ error: 'Document ID is already used by another image', documentId, conflictImageId: documentTaken.id });
+  }
+  await pool.query('UPDATE Image SET document_id = ? WHERE id = ?', [documentId, imageId]);
+  res.json({ id: imageId, document_id: documentId });
+});
+
 // multer runs BEFORE requirePermission: with the old order, req.body.categoryId
 // was always undefined when the permission check ran (multer hadn't parsed the
 // multipart body yet), so the category-aware check had nothing to check against.
@@ -232,6 +277,14 @@ app.post('/api/uploads', upload.single('file'), requirePermission('upload'), asy
     return res.status(400).json({ error: 'Category does not exist' });
   }
   const categoryId = category.id;
+  const documentId = normalizeDocumentId(req.body.documentId);
+  if (documentId) {
+    const [[documentTaken]] = await pool.query('SELECT id FROM Image WHERE document_id = ?', [documentId]);
+    if (documentTaken) {
+      await removeUploadTemp(req.file);
+      return res.status(409).json({ error: 'Document ID is already used by another image', documentId, conflictImageId: documentTaken.id });
+    }
+  }
   const checksum = crypto.createHash('sha256').update(await fs.readFile(req.file.path)).digest('hex');
   const [[duplicate]] = await pool.query('SELECT id FROM Image WHERE checksum_hash = ?', [checksum]);
   if (duplicate) {
@@ -239,13 +292,13 @@ app.post('/api/uploads', upload.single('file'), requirePermission('upload'), asy
     return res.status(409).json({ error: 'Duplicate image detected', imageId: duplicate.id });
   }
   const savedName = withOriginalExtension(req.body.name, req.file.originalname, req.file.mimetype);
-  const [imageResult] = await pool.query("INSERT INTO Image (category_id, original_name, checksum_hash, status, uploaded_by, mime_type, file_size) VALUES (?, ?, ?, 'processing', ?, ?, ?)", [categoryId, savedName, checksum, req.user.id, req.file.mimetype, req.file.size]);
+  const [imageResult] = await pool.query("INSERT INTO Image (category_id, original_name, document_id, checksum_hash, status, uploaded_by, mime_type, file_size) VALUES (?, ?, ?, ?, 'processing', ?, ?, ?)", [categoryId, savedName, documentId, checksum, req.user.id, req.file.mimetype, req.file.size]);
   const [jobResult] = await pool.query("INSERT INTO UploadJob (image_id, status, progress, created_by) VALUES (?, 'queued', 0, ?)", [imageResult.insertId, req.user.id]);
   await ensureVariantFolders(categoryId);
   const originalPath = categoryPath(categoryId, 'originals', `${imageResult.insertId}.jpg`);
   await fs.rename(req.file.path, originalPath);
   enqueueImageJob({ jobId: jobResult.insertId, imageId: imageResult.insertId, categoryId, originalPath });
-  res.status(202).json({ jobId: jobResult.insertId, imageId: imageResult.insertId, status: 'processing' });
+  res.status(202).json({ jobId: jobResult.insertId, imageId: imageResult.insertId, documentId, status: 'processing' });
 });
 
 app.get('/api/jobs', async (_req, res) => { const [rows] = await pool.query('SELECT * FROM UploadJob ORDER BY created_at DESC LIMIT 20'); res.json(rows); });
@@ -307,7 +360,7 @@ app.get('/api/variants/:imageId/:variant', (req, res, next) => {
   }
 });
 
-Promise.all([ensureCategoryParentColumn(), ensureUserTables()])
+Promise.all([ensureCategoryParentColumn(), ensureImageDocumentIdColumn(), ensureUserTables()])
   .then(() => app.listen(port, () => console.log(`Image platform API listening on http://localhost:${port}`)))
   .catch((error) => {
     console.error('database migration:', error.message);

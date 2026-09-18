@@ -29,6 +29,7 @@ CREATE TABLE Image (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   category_id BIGINT NOT NULL,
   original_name VARCHAR(255) NOT NULL,
+  document_id VARCHAR(120) NULL,
   checksum_hash CHAR(64) NOT NULL UNIQUE,
   status ENUM('processing','ready','failed','deleted') NOT NULL DEFAULT 'processing',
   mime_type VARCHAR(80) NOT NULL,
@@ -38,6 +39,7 @@ CREATE TABLE Image (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX image_category_idx (category_id),
   INDEX image_checksum_idx (checksum_hash),
+  UNIQUE KEY image_document_id (document_id),
   FOREIGN KEY (category_id) REFERENCES Category(id),
   FOREIGN KEY (uploaded_by) REFERENCES User(id)
 ) ENGINE=InnoDB;

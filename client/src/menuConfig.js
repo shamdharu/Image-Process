@@ -7,7 +7,7 @@ export const menuConfig = [
       { label: 'New Category', permission: 'category.create' },
       { label: 'Open Category', permission: 'category.view' },
       { label: 'Recent Categories', permission: 'category.view' },
-      { label: 'Image Details / Properties', permission: 'view' },
+      { label: 'Properties', permission: 'view' },
       {
         label: 'Download',
         permission: 'download',
