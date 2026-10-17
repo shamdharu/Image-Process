@@ -20,11 +20,15 @@ authRouter.post('/api/login', async (req, res) => {
   }
 
   const token = createSessionToken(user.id);
+  // Cross-origin deployments (e.g. Vercel frontend -> Render backend) require
+  // sameSite: 'none' + secure: true so the browser sends the cookie on every
+  // cross-origin API request. 'lax' blocks it entirely in that scenario.
+  const isProduction = process.env.NODE_ENV === 'production';
   res.cookie(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite: isProduction ? 'none' : 'lax',
+    secure: isProduction,
     maxAge: SESSION_MAX_AGE_MS,
-    // secure: true, // enable once served over HTTPS
   });
   res.json({ id: user.id, username: user.username, email: user.email, role: user.role });
 });
