@@ -15,6 +15,7 @@ import { usersRouter } from './routes/users.js';
 import { aiRouter } from './routes/ai.js';
 import { categoryPath, ensureVariantFolders, storageRoot } from './services/storage.js';
 import { enqueueImageJob } from './services/worker.js';
+import { seedAdmin } from './scripts/seed-admin.js';
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(serverDirectory, '../../.env') });
 dotenv.config();
@@ -693,6 +694,7 @@ app.get('/api/variants/:imageId/:variant', (req, res, next) => {
 });
 
 Promise.all([ensureCategoryParentColumn(), ensureImageDocumentIdColumn(), ensureUserTables(), ensureOrganizationTables()])
+  .then(() => seedAdmin())
   .then(() => app.listen(port, () => console.log(`Image platform API listening on http://localhost:${port}`)))
   .catch((error) => {
     console.error('database migration:', error.message);
