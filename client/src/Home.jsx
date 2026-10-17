@@ -1,61 +1,15 @@
 import { useMemo, useState } from "react";
 import {
   ArrowUpRight,
-  BookOpen,
   CheckCircle2,
-  ChevronRight,
   Clock3,
+  Database,
   Folder,
-  FolderOpen,
-  Layers3,
-  MessageCircle,
-  MoreHorizontal,
-  Plus,
-  Search,
-  Moon,
-  Settings2,
-  ShieldCheck,
-  Sparkles,
-  Sun,
-  Tag,
-  Upload,
-  Users,
-  Zap,
+  LogOut,
+  Image as ImageIcon,
 } from "lucide-react";
 import Taskbar from "./Taskbar";
-import AiChat from "./AiChat";
 import "./Home.css";
-
-const activityItems = [
-  {
-    icon: Layers3,
-    title: "Workspace is ready for review",
-    detail: "Your shared image library is organized and up to date.",
-    meta: "Just now",
-    tone: "teal",
-  },
-  {
-    icon: FolderOpen,
-    title: "Browse your latest folders",
-    detail: "Open a folder to continue working with image assets.",
-    meta: "Today",
-    tone: "blue",
-  },
-  {
-    icon: CheckCircle2,
-    title: "Sync health is excellent",
-    detail: "All local changes are available in this workspace.",
-    meta: "Today",
-    tone: "green",
-  },
-  {
-    icon: ShieldCheck,
-    title: "Permissions are protected",
-    detail: "Folder access follows your workspace role.",
-    meta: "Yesterday",
-    tone: "orange",
-  },
-];
 
 const fallbackFolders = [
   { id: "brand", name: "Brand Assets", count: 48, color: "blue" },
@@ -69,51 +23,73 @@ export default function Home({
   theme = "light",
   onThemeToggle,
   categories = [],
+  access = null,
   onOpenFolder,
   onUpload,
   onCreateFolder,
+  onAdmin,
 }) {
-  const [chatOpen, setChatOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const displayName = user?.username || user?.email?.split("@")[0] || "there";
   const currentHour = new Date().getHours();
-  const greeting = currentHour < 12
-    ? "Good morning"
-    : currentHour < 18
-      ? "Good afternoon"
-      : "Good evening";
+  const greeting =
+    currentHour < 12 ? "Good morning" : currentHour < 18 ? "Good afternoon" : "Good evening";
+
   const folders = useMemo(() => {
-    const roots = categories.filter((item) => !item.parentId).slice(0, 4);
-    return roots.length
-      ? roots.map((item, index) => ({
-          ...item,
-          color: fallbackFolders[index % fallbackFolders.length].color,
-        }))
-      : fallbackFolders;
-  }, [categories]);
-  const totalImages = categories.reduce(
-    (sum, item) => sum + Number(item.count || 0),
-    0,
+    const allowedNumbers =
+      access && !access.isAdmin
+        ? new Set(
+            (access.grants || [])
+              .map((grant) => Number(grant.number))
+              .filter((value) => Number.isFinite(value)),
+          )
+        : null;
+
+    const roots = categories.filter((item) => {
+      if (item.parentId) return false;
+      if (!allowedNumbers) return true;
+      return allowedNumbers.has(Number(item.number));
+    });
+
+    if (!roots.length) {
+      return [];
+    }
+
+    return roots.slice(0, 6).map((item, index) => ({
+      ...item,
+      id: item.id,
+      name: item.name,
+      count: Number(item.count || 0),
+      color: fallbackFolders[index % fallbackFolders.length].color,
+    }));
+  }, [categories, access]);
+
+  const totalImages = useMemo(
+    () => folders.reduce((sum, item) => sum + Number(item.count || 0), 0),
+    [folders],
   );
-  const folderCount = categories.length || 24;
-  const graphValues = [
-    42,
-    58,
-    47,
-    72,
-    64,
-    Math.min(96, 68 + (totalImages % 24)),
-  ];
+
+  const folderCount = folders.length;
+  const storagePercent = totalImages
+    ? Math.min(100, Math.round((totalImages / Math.max(1, folderCount * 120)) * 100))
+    : 0;
+
+  const activityItems = useMemo(
+    () =>
+      folders.slice(0, 4).map((folder, index) => ({
+        icon: index % 2 === 0 ? Folder : Clock3,
+        title: folder.name,
+        detail: `${Number(folder.count || 0)} assets in this folder`,
+        meta: index === 0 ? "Now" : index === 1 ? "Today" : "Recent",
+        tone: index % 2 === 0 ? "teal" : "blue",
+      })),
+    [folders],
+  );
+
   const taskbarFooter = (
     <>
-      <button
-        onClick={onThemeToggle}
-        aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-        title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-      >
-        {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
-      </button>
       <button>
-        <Clock3 size={15} /> Notifications <i />
+        <Clock3 size={15} /> Activity
       </button>
       <div className="home-user">
         <span className="home-user-avatar">
@@ -123,51 +99,42 @@ export default function Home({
           <strong>{displayName}</strong>
           <small>{user?.role === "admin" ? "Administrator" : "Editor"}</small>
         </span>
-        <MoreHorizontal size={15} />
+        <button
+          className="taskbar-profile-more"
+          onClick={() => setProfileOpen((open) => !open)}
+          aria-label="Open profile menu"
+        >
+          <Clock3 size={15} />
+        </button>
+        {profileOpen && (
+          <div className="sidebar-profile-menu">
+            <button onClick={() => window.dispatchEvent(new Event("sign-out"))}>
+              <LogOut size={15} /> Sign out
+            </button>
+          </div>
+        )}
       </div>
     </>
   );
 
   return (
     <main className="home-page">
-      <div className="home-layout">
-        <aside className="home-sidebar">
+      <header className="home-topbar">
           <Taskbar
             active="home"
             onHome={() => {}}
             onFolders={() => folders[0] && onOpenFolder(folders[0])}
+            onAdmin={user?.role === "admin" ? onAdmin : null}
             footer={taskbarFooter}
           />
-        </aside>
-
+      </header>
+      <div className="home-layout">
         <section className="home-content">
           <div className="home-heading-row">
             <div>
               <h1>
-                { greeting}, <em>{displayName}</em>
+                {greeting}, <em>{displayName}</em>
               </h1>
-            </div>
-            <div className="home-heading-actions">
-              <label className="home-search">
-                <Search size={15} />
-                <input placeholder="Search resources, tags, files..." />
-              </label>
-              <button onClick={onCreateFolder}>
-                <FolderOpen size={15} /> Folder
-              </button>
-              <button onClick={onUpload}>
-                <Upload size={15} /> Upload
-              </button>
-              <button className="home-new-page" onClick={onCreateFolder}>
-                <Plus size={15} /> New Page
-              </button>
-              <button
-                className="home-spark-button"
-                onClick={() => setChatOpen(true)}
-                aria-label="Open AI assistant"
-              >
-                <Sparkles size={17} />
-              </button>
             </div>
           </div>
 
@@ -175,52 +142,42 @@ export default function Home({
             <section className="home-panel docs-panel">
               <div className="panel-title">
                 <span className="panel-icon dark">
-                  <BookOpen size={17} />
+                  <Database size={17} />
                 </span>
                 <div>
-                  <h2>
-                    Documentation <b>Active</b>
-                  </h2>
+                  <h2>Project overview</h2>
                   <p>
-                    {categories.length
-                      ? `${categories.length} folders · ${totalImages} images`
-                      : "128 articles · 6 drafts"}
+                    {folderCount} folders · {totalImages} assets
                   </p>
                 </div>
-                <MoreHorizontal size={17} />
+                <ArrowUpRight size={17} />
               </div>
               <p className="panel-copy">
-                Centralized repository for design specifications, operational
-                guides, and image collections.
+                Live folder and asset data for your project.
               </p>
               <div className="doc-list">
                 <div>
-                  <BookOpen size={13} />
-                  <span>Design System Guidelines v2</span>
-                  <b>v2.4</b>
+                  <ImageIcon size={13} />
+                  <span>Total images</span>
+                  <b>{totalImages}</b>
                 </div>
                 <div>
-                  <ShieldCheck size={13} />
-                  <span>API Auth Specs & Handshake</span>
-                  <b className="ready">Ready</b>
+                  <Folder size={13} />
+                  <span>Active folders</span>
+                  <b>{folderCount}</b>
                 </div>
                 <div>
-                  <BookOpen size={13} />
-                  <span>Onboarding Playbook 2025</span>
-                  <b className="draft">Draft</b>
-                </div>
-                <div>
-                  <ShieldCheck size={13} />
-                  <span>Security & Compliance Standard</span>
-                  <b className="review">Review</b>
+                  <Database size={13} />
+                  <span>Storage usage</span>
+                  <b>{storagePercent}%</b>
                 </div>
               </div>
               <div className="panel-footer">
                 <span>
-                  <span className="sync-dot" /> Syncing with local library
+                  <span className="sync-dot" /> Live project data
                 </span>
-                <button>
-                  Browse all docs <ArrowUpRight size={13} />
+                <button onClick={onUpload}>
+                  Upload files <ArrowUpRight size={13} />
                 </button>
               </div>
             </section>
@@ -232,94 +189,79 @@ export default function Home({
                 </span>
                 <div>
                   <h2>Folders</h2>
-                  <p>{folderCount} directories · 4 shared</p>
+                  <p>{folderCount} available</p>
                 </div>
-                <MoreHorizontal size={17} />
               </div>
+
               <div className="folder-grid">
-                {folders.map((folder) => (
-                  <button
-                    className="folder-tile"
-                    key={folder.id}
-                    onClick={() => onOpenFolder(folder)}
-                  >
-                    <span className={`folder-icon ${folder.color}`}>
-                      <Folder size={15} />
-                    </span>
-                    <strong>{folder.name}</strong>
-                    <small>
-                      {Number(folder.count || folder.image_count || 0)} files
-                    </small>
-                  </button>
-                ))}
+                {folders.length ? (
+                  folders.map((folder) => (
+                    <button
+                      className="folder-tile"
+                      key={folder.id || folder.name}
+                      onClick={() => onOpenFolder(folder)}
+                    >
+                      <span className={`folder-icon ${folder.color}`}>
+                        <Folder size={15} />
+                      </span>
+                      <strong>{folder.name}</strong>
+                      <small>{Number(folder.count || 0)} assets</small>
+                    </button>
+                  ))
+                ) : (
+                  <div className="empty-folder-state">
+                    No accessible folders for this user.
+                  </div>
+                )}
               </div>
+
               <div className="storage-summary">
                 <div>
                   <span>Storage utilization</span>
-                  <strong>
-                    {totalImages
-                      ? `${Math.min(78, Math.max(24, Math.round(totalImages / 4)))}%`
-                      : "35%"}
-                  </strong>
+                  <strong>{storagePercent}%</strong>
                 </div>
                 <div className="storage-track">
-                  <span />
+                  <span style={{ width: `${storagePercent}%` }} />
                 </div>
-                <small>
-                  <i className="client" /> Client <i className="brand" /> Brand{" "}
-                  <i className="other" /> Other
-                </small>
+                <small>Usage updates from the current folder and asset counts.</small>
               </div>
             </section>
 
             <section className="home-panel organization-panel">
               <div className="panel-title">
                 <span className="panel-icon">
-                  <Users size={17} />
+                  <CheckCircle2 size={17} />
                 </span>
                 <div>
-                  <h2>Organization</h2>
-                  <p>8 Teams · 42 Workspaces</p>
+                  <h2>Quick status</h2>
+                  <p>{totalImages ? "Assets ready" : "No files uploaded yet"}</p>
                 </div>
-                <Settings2 size={16} />
               </div>
+
               <div className="organization-links">
-                <button>
-                  <Tag size={14} />
+                <button onClick={onCreateFolder}>
                   <span>
-                    <strong>Tags & Metadata</strong>
-                    <small>64 taxonomy entries</small>
+                    <strong>Create folder</strong>
+                    <small>{folderCount} folders available</small>
                   </span>
-                  <ChevronRight size={15} />
+                  <ArrowUpRight size={15} />
                 </button>
-                <button>
-                  <ShieldCheck size={14} />
+                <button onClick={onUpload}>
                   <span>
-                    <strong>Team Permissions</strong>
-                    <small>RBAC · Okta SSO</small>
+                    <strong>Upload assets</strong>
+                    <small>{totalImages} items already stored</small>
                   </span>
-                  <ChevronRight size={15} />
+                  <ArrowUpRight size={15} />
                 </button>
-                <button>
-                  <Zap size={14} />
+                <button onClick={() => folders[0] && onOpenFolder(folders[0])}>
+                  <Folder size={14} />
                   <span>
-                    <strong>Workflows & Rules</strong>
-                    <small>12 active triggers</small>
+                    <strong>Open latest folder</strong>
+                    <small>{folders[0]?.name || "No folder yet"}</small>
                   </span>
-                  <ChevronRight size={15} />
-                </button>
-                <button>
-                  <Clock3 size={14} />
-                  <span>
-                    <strong>Audit & Access Logs</strong>
-                    <small>Real-time tracking</small>
-                  </span>
-                  <ChevronRight size={15} />
+                  <ArrowUpRight size={15} />
                 </button>
               </div>
-              <button className="policy-button">
-                <Users size={13} /> Workspace Policies
-              </button>
             </section>
           </div>
 
@@ -327,102 +269,59 @@ export default function Home({
             <section className="home-panel activity-panel">
               <div className="activity-header">
                 <h2>
-                  <Clock3 size={17} /> Recent Activity
+                  <Clock3 size={17} /> Recent folders
                 </h2>
-                <div>
-                  <button className="selected">All Logs</button>
-                  <button>My Edits</button>
-                  <button>Review Requests</button>
-                </div>
               </div>
               <div className="activity-list">
-                {activityItems.map(
-                  ({ icon: Icon, title, detail, meta, tone }) => (
-                    <button className="activity-row" key={title}>
-                      <span className={`activity-icon ${tone}`}>
-                        <Icon size={14} />
-                      </span>
-                      <span className="activity-copy">
-                        <strong>{title}</strong>
-                        <small>{detail}</small>
-                      </span>
-                      <time>{meta}</time>
-                      <ChevronRight size={14} />
-                    </button>
-                  ),
-                )}
+                {activityItems.map(({ icon: Icon, title, detail, meta, tone }) => (
+                  <button className="activity-row" key={title} onClick={() => onOpenFolder(folders.find((folder) => folder.name === title))}>
+                    <span className={`activity-icon ${tone}`}>
+                      <Icon size={14} />
+                    </span>
+                    <span className="activity-copy">
+                      <strong>{title}</strong>
+                      <small>{detail}</small>
+                    </span>
+                    <time>{meta}</time>
+                    <ArrowUpRight size={14} />
+                  </button>
+                ))}
               </div>
             </section>
-            <div className="home-side-panels">
-              <section className="home-panel pulse-panel">
-                <div className="side-panel-title">
-                  <h2>Workspace Live Pulse</h2>
-                  <span>
-                    <i /> 28 Active Now
-                  </span>
-                </div>
-                <div className="people-stack">
-                  <span>AM</span>
-                  <span>SL</span>
-                  <span>ER</span>
-                  <span>MC</span>
-                  <b>+24</b>
-                </div>
-                <p>
-                  Real-time presence enabled via Imaginary Mesh Protocol.
-                  Latency: 18ms.
-                </p>
-              </section>
-              <section className="home-panel health-panel">
-                <div className="side-panel-title">
-                  <h2>Storage & Activity</h2>
-                  <CheckCircle2 size={15} />
-                </div>
-                <strong>{totalImages || "99.98%"}</strong>
-                <span>
-                  {totalImages
-                    ? `${totalImages} images across ${folderCount} folders`
-                    : "Continuous Uptime"}
-                </span>
-                <div
-                  className="health-chart"
-                  aria-label="Workspace activity graph"
-                >
-                  {graphValues.map((value, index) => (
-                    <i
-                      key={`${value}-${index}`}
-                      style={{ height: `${value}%` }}
-                    />
-                  ))}
-                </div>
-                <div className="chart-labels">
-                  <span>Mon</span>
-                  <span>Tue</span>
-                  <span>Wed</span>
-                  <span>Thu</span>
-                  <span>Fri</span>
-                  <span>Now</span>
-                </div>
-                <small>
-                  Cache hit ratio: 94.2% <b>Healthy</b>
-                </small>
-              </section>
-            </div>
+
+            <section className="home-panel health-panel">
+              <div className="side-panel-title">
+                <h2>Current usage</h2>
+                <CheckCircle2 size={15} />
+              </div>
+              <strong>{totalImages}</strong>
+              <span>{totalImages ? `${folderCount} folders with assets` : "Waiting for uploads"}</span>
+              <div className="health-chart" aria-label="Storage activity graph">
+                {Array.from({ length: 6 }).map((_, index) => (
+                  <i
+                    key={index}
+                    style={{
+                      height: `${Math.max(12, (totalImages || 12) / (index + 1) + (index * 8))}%`,
+                    }}
+                  />
+                ))}
+              </div>
+              <div className="chart-labels">
+                <span>Mon</span>
+                <span>Tue</span>
+                <span>Wed</span>
+                <span>Thu</span>
+                <span>Fri</span>
+                <span>Now</span>
+              </div>
+              <small>
+                Usage level: <b>{storagePercent}%</b>
+              </small>
+            </section>
           </div>
         </section>
       </div>
-      {!chatOpen && (
-        <button
-          className="ai-chat-launcher"
-          onClick={() => setChatOpen(true)}
-          aria-label="Open Imaginary Assistant"
-          title="Open Imaginary Assistant"
-        >
-          <MessageCircle size={21} />
-          <span className="ai-chat-launcher-dot" />
-        </button>
-      )}
-      <AiChat open={chatOpen} onClose={() => setChatOpen(false)} />
+
     </main>
   );
 }

@@ -4,9 +4,9 @@ import {
   Aperture,
   Archive,
   Bell,
-  Building2,
   Camera,
   Check,
+  ChevronLeft,
   Clock3,
   ChevronDown,
   ChevronRight,
@@ -29,6 +29,7 @@ import {
   Settings2,
   Shield,
   Sun,
+  MoveVertical,
   Tag,
   Trash2,
   Upload,
@@ -36,11 +37,13 @@ import {
   X,
   ZoomIn,
   ZoomOut,
+  Copy,
 } from "lucide-react";
 import JSZip from "jszip";
 import { menuConfig } from "./menuConfig";
 import LoginPage from "./Loginpage";
 import Home from "./Home";
+import AdminDashboard from "./AdminDashboard";
 import "./App.css";
 
 const categoryKey = (number) => String(number).padStart(2, "0");
@@ -79,21 +82,29 @@ const readPreviewSize = () => {
 const previewSizeLabel = (size) =>
   previewSizes.find((item) => item.key === size)?.short ||
   previewSizes.find((item) => item.key === defaultPreviewSize).short;
-const tileSource = (image, size) => {
-  const variant = previewSizes.find((item) => item.key === size)?.variant;
+const previewSizeOrder = ["small", "medium", "large", "extra"];
+const resolutionVariants = {
+  Thumbnail: "thumbnail",
+  Web: "web",
+  HD: "hd",
+  Original: "original",
+};
+const tileSource = (image, size, resolution = null) => {
+  const fallback =
+    previewSizes.find((item) => item.key === size)?.variant || "web";
+  const variant = resolution || fallback;
   return variant && typeof image.id === "number"
-    ? `http://localhost:4000/api/variants/${image.id}/${variant}`
+    ? `${import.meta.env.VITE_API_URL || 'http://localhost:4000'}/api/variants/${image.id}/${variant}`
     : image.src;
 };
 const fullSource = (image) =>
   typeof image.id === "number"
-    ? `http://localhost:4000/api/variants/${image.id}/hd`
+    ? `${import.meta.env.VITE_API_URL || 'http://localhost:4000'}/api/variants/${image.id}/hd`
     : image.src;
-const userInitials = (user) =>
-  (user?.username || user?.email || "?").slice(0, 2).toUpperCase();
 
 // Document ids mirror normalizeDocumentId() on the server: trimmed, and blank
-// means "no document id yet" rather than an empty string.
+// means "not supplied" rather than an empty string. Uploads require one, so
+// these helpers gate the upload buttons and back up the server's 400.
 const cleanDocumentId = (value) => (value || "").trim();
 
 // Bulk uploads number the ids they generate, e.g. DSC-1, DSC-2, ... in the order
@@ -152,14 +163,12 @@ function useMenuPlacement(anchor, menuRef, open) {
 // Without credentials:'include' the browser strips the cookie and the server's
 // requireAuth/requirePermission middleware answers 401 Unauthorized.
 const apiFetch = (path, options = {}) =>
-  fetch(`http://localhost:4000${path}`, { credentials: "include", ...options });
+  fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:4000'}${path}`, { credentials: "include", ...options });
 
 // Mirrors EMAIL_PATTERN in server/src/routes/users.js.
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-// FILE-menu rows that only an admin may use. POST /api/users and
-// POST /api/categories are admin-scoped operations, so a standard user should
-// not even be offered them.
-const ADMIN_ONLY_MENU_ROWS = new Set(["Create User", "New Category"]);
+// Folder creation remains an admin-only File-menu action.
+const ADMIN_ONLY_MENU_ROWS = new Set(["New Category"]);
 
 const readCategoryOrder = () => {
   try {
@@ -185,31 +194,11 @@ const readPreviewEnabled = () => {
 };
 
 // ---- Organizations (sidebar tab) ----------------------------------------
-// Purely client-side for now: no backend endpoint exists yet, so the list is
-// seeded once and kept in localStorage the same way category order is.
+// Organizations live in the database now (Organization table) and each folder
+// belongs to exactly one of them, so selecting an org filters the folder list.
+// The list itself comes from GET /api/organizations; only the selection is
+// remembered locally.
 const orgInitials = (name) => (name || "?").trim().slice(0, 2).toUpperCase();
-const readOrganizations = () => {
-  try {
-    const saved = JSON.parse(
-      window.localStorage.getItem("imagery.organizations") || "null",
-    );
-    if (Array.isArray(saved) && saved.length) return saved;
-  } catch {}
-  return [{ id: "org-default", name: "Default Organization", membersCount: 1 }];
-};
-const writeOrganizations = (list) => {
-  try {
-    window.localStorage.setItem("imagery.organizations", JSON.stringify(list));
-  } catch {}
-};
-const readSelectedOrgId = (organizations) => {
-  try {
-    const saved = window.localStorage.getItem("imagery.selected-organization");
-    if (saved && organizations.some((org) => String(org.id) === saved))
-      return saved;
-  } catch {}
-  return organizations[0]?.id ?? null;
-};
 
 function buildCategoryTree(categories) {
   const nodes = categories.map((category) => ({ ...category, children: [] }));
@@ -228,6 +217,20 @@ function buildCategoryTree(categories) {
   roots.sort(byOrder);
   nodes.forEach((category) => category.children.sort(byOrder));
   return roots;
+}
+
+function getCategoryPath(category, categories) {
+  if (!category) return [];
+  const byId = new Map(categories.map((item) => [String(item.id), item]));
+  const path = [];
+  const visited = new Set();
+  let current = category;
+  while (current && !visited.has(String(current.id))) {
+    visited.add(String(current.id));
+    path.unshift(current);
+    current = current.parentId ? byId.get(String(current.parentId)) : null;
+  }
+  return path;
 }
 
 // ---- Folder-as-ZIP download helpers -------------------------------------
@@ -309,6 +312,115 @@ async function downloadCategoryAsZip(rootCategory, categories, onProgress) {
 
 // ---------------------------------------------------------------------------
 
+function MenuRow({
+  item,
+  canDownload,
+  subOpen,
+  setSubOpen,
+  previewSizeKey,
+  activeView,
+  activeResolution,
+  onClose,
+  onUpload,
+  setWebcamOpen,
+  onViewChange,
+  onPreviewSize,
+  onZoomIn,
+  onZoomOut,
+  onFitToScreen,
+  onResolution,
+  onProperties,
+  onPrint,
+  onDownloadEntry,
+}) {
+  const hasSubmenu = Boolean(item.submenu);
+  const isSubOpen = subOpen === item.label;
+  // Rows that need download rights are greyed out and inert without them.
+  const isDisabled = item.permission === "download" && !canDownload;
+  const isChecked =
+    (item.label === "Gallery / Grid view" && activeView === "grid") ||
+    (item.label === "List view" && activeView === "list");
+  const handleSelect = () => {
+    if (item.permission === "download" && !canDownload) return;
+    if (item.label === "New Category")
+      window.dispatchEvent(new Event("new-category"));
+    else if (item.label === "Open Category")
+      window.dispatchEvent(new Event("open-category"));
+    else if (item.label === "Recent Categories")
+      window.dispatchEvent(new Event("recent-categories"));
+    else if (item.label === "Gallery / Grid view") onViewChange("grid");
+    else if (item.label === "List view") onViewChange("list");
+    else if (item.label === "Zoom In") onZoomIn();
+    else if (item.label === "Zoom Out") onZoomOut();
+    else if (item.label === "Fit to Screen") onFitToScreen();
+    else if (item.label === "Properties") onProperties();
+    else if (item.label.startsWith("Print")) onPrint();
+    else if (item.label.includes("Webcam")) setWebcamOpen(true);
+    else if (item.label.includes("Upload")) onUpload();
+    else if (
+      item.label === "Sign Out and Exit" ||
+      item.label === "Exit Application" ||
+      item.label === "Lock Screen"
+    )
+      window.dispatchEvent(new Event("sign-out"));
+    onClose();
+  };
+  return (
+    <div
+      className={`dropdown-row ${isDisabled ? "disabled" : ""} ${isChecked ? "checked" : ""} ${hasSubmenu && isSubOpen ? "sub-open" : ""}`}
+      onMouseEnter={() =>
+        setSubOpen(hasSubmenu && !isDisabled ? item.label : null)
+      }
+      onClick={() => {
+        if (isDisabled) return;
+        if (hasSubmenu) {
+          setSubOpen(isSubOpen ? null : item.label);
+          return;
+        }
+        handleSelect();
+      }}
+    >
+      <span>{item.label}</span>
+      {isChecked ? (
+        <Check size={13} />
+      ) : (
+        item.submenu && <ChevronRight size={13} />
+      )}
+      {hasSubmenu && isSubOpen && (
+        <div
+          className="dropdown submenu"
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {item.submenu.map((entry) => {
+            const entryActive =
+              (item.label === "Preview Size" &&
+                previewSizeKeys[entry] === previewSizeKey) ||
+              (item.label === "Resolution selector" &&
+                activeResolution === entry);
+            return (
+              <div
+                key={entry}
+                className={`dropdown-row ${entryActive ? "checked" : ""}`}
+                onClick={() => {
+                  if (item.label === "Preview Size") onPreviewSize(entry);
+                  else if (item.label === "Resolution selector")
+                    onResolution(entry);
+                  else if (item.label === "Download") onDownloadEntry(entry);
+                  onClose();
+                }}
+              >
+                <span>{entry}</span>
+                {entryActive && <Check size={13} />}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MenuBar({
   onUpload,
   onHome = () => window.dispatchEvent(new Event("go-home")),
@@ -317,15 +429,41 @@ function MenuBar({
   user,
   canDownload = true,
   isAdmin = false,
+  onViewChange = () => {},
+  onPreviewSize = () => {},
+  onZoomIn = () => {},
+  onZoomOut = () => {},
+  onFitToScreen = () => {},
+  onResolution = () => {},
+  onProperties = () => {},
+  onPrint = () => {},
+  onDownloadEntry = () => {},
+  onAdmin = null,
+  previewSizeKey = "medium",
+  activeView = "grid",
+  activeResolution = null,
 }) {
   const [open, setOpen] = useState(null);
+  const [subOpen, setSubOpen] = useState(null);
   const [webcamOpen, setWebcamOpen] = useState(false);
+  const openMenu = (index) => {
+    setOpen(index);
+    setSubOpen(null);
+  };
   useEffect(() => {
     if (open === null) return undefined;
-    // 'open' is null | nav index | 'profile', so both the nav dropdowns and the
-    // profile panel count as "inside" for the click-outside-to-close check.
+    // 'open' is null | nav index | 'profile'. Everything that belongs to an open
+    // menu counts as "inside" for the click-outside-to-close check: the nav
+    // dropdowns, plus — in the sidebar footer — the "..." chip and its popup.
+    // The chip must be listed or a mousedown on it closes the menu first and
+    // the click that follows re-opens it, so the second click never closes it.
     const insideMenu = (target) =>
-      Boolean(target.closest(".menu-wrap") || target.closest(".profile-wrap"));
+      Boolean(
+        target.closest(".menu-wrap") ||
+          target.closest(".profile-wrap") ||
+          target.closest(".taskbar-profile-more") ||
+          target.closest(".sidebar-profile-menu"),
+      );
     const closeMenu = (event) => {
       if (!insideMenu(event.target)) setOpen(null);
     };
@@ -341,14 +479,20 @@ function MenuBar({
   }, [open]);
   const footer = (
     <>
-      <button onClick={onThemeToggle} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`} title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}>
+      <button
+        onClick={onThemeToggle}
+        aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+        title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+      >
         {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
       </button>
       <button>
         <Clock3 size={15} /> Notifications <i />
       </button>
       <div className="home-user">
-        <span className="home-user-avatar">{(user?.username || user?.email || "?").slice(0, 1).toUpperCase()}</span>
+        <span className="home-user-avatar">
+          {(user?.username || user?.email || "?").slice(0, 1).toUpperCase()}
+        </span>
         <span>
           <strong>{user?.username || "Guest"}</strong>
           <small>{user?.role === "admin" ? "Administrator" : "Editor"}</small>
@@ -362,7 +506,6 @@ function MenuBar({
         </button>
         {open === "profile" && (
           <ProfileMenu
-            user={user}
             onSignOut={() => {
               setOpen(null);
               window.dispatchEvent(new Event("sign-out"));
@@ -375,79 +518,80 @@ function MenuBar({
   return (
     <>
       <header className="topbar">
-        <Taskbar active="folders" onHome={onHome} onFolders={() => {}} footer={footer}>
+        <Taskbar
+          active="folders"
+          onHome={onHome}
+          onFolders={() => {}}
+          onAdmin={isAdmin ? onAdmin : null}
+          footer={footer}
+        >
           <button className="mobile-menu icon-button">
             <Menu size={18} />
           </button>
           <nav className="menus">
-          {menuConfig.map((menu, index) => (
-            <div
-              className="menu-wrap"
-              key={menu.label}
-              onMouseEnter={() =>
-                open !== null && open !== "profile" && setOpen(index)
-              }
-            >
-              <button
-                className={`menu-button ${open === index ? "active" : ""}`}
-                onClick={() => {
-                  const next = open === index ? null : index;
-                  if (next !== null)
-                    window.dispatchEvent(new Event("close-popovers"));
-                  setOpen(next);
-                }}
+            {menuConfig.map((menu, index) => (
+              <div
+                className="menu-wrap"
+                key={menu.label}
+                onMouseEnter={() =>
+                  open !== null && open !== "profile" && openMenu(index)
+                }
               >
-                {menu.label}
-                <ChevronDown size={12} />
-              </button>
-              {open === index && (
-                <div className="dropdown">
-                  {menu.items
-                    .filter(
-                      (item) =>
-                        isAdmin || !ADMIN_ONLY_MENU_ROWS.has(item.label),
-                    )
-                    .map((item) => (
-                      <div
-                        key={item.label}
-                        className={`dropdown-row ${item.permission === "download" && !canDownload ? "disabled" : ""}`}
-                        onClick={() => {
-                          if (item.permission === "download" && !canDownload)
-                            return;
-                          if (item.label === "Create User")
-                            window.dispatchEvent(new Event("create-user"));
-                          else if (item.label === "New Category")
-                            window.dispatchEvent(new Event("new-category"));
-                          else if (item.label === "Open Category")
-                            window.dispatchEvent(new Event("open-category"));
-                          else if (item.label === "Recent Categories")
-                            window.dispatchEvent(
-                              new Event("recent-categories"),
-                            );
-                          else if (item.label === "Preview Size")
-                            window.dispatchEvent(
-                              new Event("preview-size-menu"),
-                            );
-                          else if (item.label.includes("Webcam"))
-                            setWebcamOpen(true);
-                          else if (item.label.includes("Upload")) onUpload();
-                          else if (
-                            item.label === "Sign Out and Exit" ||
-                            item.label === "Exit Application" ||
-                            item.label === "Lock Screen"
-                          )
-                            window.dispatchEvent(new Event("sign-out"));
-                          setOpen(null);
-                        }}
-                      >
-                        <span>{item.label}</span>
-                        {item.submenu && <ChevronRight size={13} />}
-                      </div>
-                    ))}
-                </div>
-              )}
-            </div>
-          ))}
+                <button
+                  className={`menu-button ${open === index ? "active" : ""}`}
+                  onClick={() => {
+                    const next = open === index ? null : index;
+                    if (next !== null)
+                      window.dispatchEvent(new Event("close-popovers"));
+                    if (next === null) {
+                      setOpen(null);
+                      setSubOpen(null);
+                    } else {
+                      openMenu(next);
+                    }
+                  }}
+                >
+                  {menu.label}
+                  <ChevronDown size={12} />
+                </button>
+                {open === index && (
+                  <div className="dropdown">
+                    {menu.items
+                      .filter(
+                        (item) =>
+                          isAdmin || !ADMIN_ONLY_MENU_ROWS.has(item.label),
+                      )
+                      .map((item) => (
+                        <MenuRow
+                          key={item.label}
+                          item={item}
+                          canDownload={canDownload}
+                          subOpen={subOpen}
+                          setSubOpen={setSubOpen}
+                          previewSizeKey={previewSizeKey}
+                          activeView={activeView}
+                          activeResolution={activeResolution}
+                          onClose={() => {
+                            setOpen(null);
+                            setSubOpen(null);
+                          }}
+                          onUpload={onUpload}
+                          setWebcamOpen={setWebcamOpen}
+                          onViewChange={onViewChange}
+                          onPreviewSize={onPreviewSize}
+                          onZoomIn={onZoomIn}
+                          onZoomOut={onZoomOut}
+                          onFitToScreen={onFitToScreen}
+                          onResolution={onResolution}
+                          onProperties={onProperties}
+                          onPrint={onPrint}
+                          onDownloadEntry={onDownloadEntry}
+                        />
+                      ))}
+                  </div>
+                )}
+              </div>
+            ))}
           </nav>
         </Taskbar>
       </header>
@@ -469,23 +613,29 @@ function MenuBar({
 // ---- Organization dialog & panel -----------------------------------------
 // Mirrors CategoryDialog's shape/behaviour so it feels like the same "New
 // folder" creation flow, just scoped to organizations instead of folders.
-function OrganizationDialog({ open, name, setName, onCancel, onConfirm, editing = false }) {
+function OrganizationDialog({
+  open,
+  name,
+  setName,
+  onCancel,
+  onConfirm,
+  editing = false,
+}) {
   if (!open) return null;
   return (
     <div className="modal-backdrop">
       <div className="category-dialog">
         <div className="dialog-header">
           <div>
-            <p className="eyebrow">{editing ? "EDIT ORGANIZATION" : "NEW ORGANIZATION"}</p>
+            <p className="eyebrow">
+              {editing ? "EDIT ORGANIZATION" : "NEW ORGANIZATION"}
+            </p>
             <h2>{editing ? "Rename organization" : "Create organization"}</h2>
           </div>
           <button className="icon-button" onClick={onCancel}>
             <X size={16} />
           </button>
         </div>
-        <p className="dialog-description">
-          Organizations group folders and members under one workspace name.
-        </p>
         <label className="dialog-label">
           Organization name
           <input
@@ -505,13 +655,15 @@ function OrganizationDialog({ open, name, setName, onCancel, onConfirm, editing 
             disabled={!name.trim()}
             onClick={onConfirm}
           >
-            {editing ? <Edit3 size={15} /> : <Plus size={15} />} {editing ? "Save name" : "Create organization"}
+            {editing ? <Edit3 size={15} /> : <Plus size={15} />}{" "}
+            {editing ? "Save name" : "Create organization"}
           </button>
         </div>
       </div>
     </div>
   );
 }
+
 function OrganizationDeleteDialog({ organization, onCancel, onConfirm }) {
   if (!organization) return null;
   return (
@@ -527,10 +679,13 @@ function OrganizationDeleteDialog({ organization, onCancel, onConfirm }) {
           </button>
         </div>
         <p className="dialog-description">
-          This will remove <strong>{organization.name}</strong> from this workspace.
+          This will remove <strong>{organization.name}</strong> from this
+          workspace.
         </p>
         <div className="dialog-actions">
-          <button className="cancel-button" onClick={onCancel}>Cancel</button>
+          <button className="cancel-button" onClick={onCancel}>
+            Cancel
+          </button>
           <button className="delete-button" onClick={onConfirm}>
             <Trash2 size={15} /> Delete organization
           </button>
@@ -539,6 +694,7 @@ function OrganizationDeleteDialog({ organization, onCancel, onConfirm }) {
     </div>
   );
 }
+
 function OrganizationPanel({
   organizations,
   selectedOrgId,
@@ -546,22 +702,33 @@ function OrganizationPanel({
   onAdd,
   onEdit,
   onDelete,
+  onOpen = null,
   isAdmin = false,
 }) {
-  const [openMenuId, setOpenMenuId] = useState(null);
+  const [openMenu, setOpenMenu] = useState(null);
+  const menuRef = useRef(null);
+  const position = useMenuPlacement(
+    openMenu?.anchor,
+    menuRef,
+    Boolean(openMenu),
+  );
   useEffect(() => {
-    if (openMenuId === null) return undefined;
+    if (openMenu === null) return undefined;
     const closeMenu = (event) => {
-      if (!event.target.closest(".org-actions")) setOpenMenuId(null);
+      if (
+        !event.target.closest(".org-actions") &&
+        !event.target.closest(".image-action-menu")
+      )
+        setOpenMenu(null);
     };
     document.addEventListener("mousedown", closeMenu);
     return () => document.removeEventListener("mousedown", closeMenu);
-  }, [openMenuId]);
+  }, [openMenu]);
   return (
     <>
       <div className="category-heading category-heading-only">
-        <span>ORGANIZATIONS</span>
-        <span>{organizations.length}</span>
+        <span>Organizations</span>
+        <span className="category-count">{organizations.length}</span>
       </div>
       <div className="org-list">
         {organizations.map((org) => {
@@ -570,25 +737,93 @@ function OrganizationPanel({
             <div
               key={org.id}
               className={`org-card ${selected ? "selected" : ""}`}
-              onClick={() => setSelectedOrgId(org.id)}
+              onClick={(event) => {
+                // Selecting an organization scopes the folder list to it and
+                // slides the folders layer in. stopPropagation keeps the
+                // shrunken organizations layer from treating this as "go back".
+                event.stopPropagation();
+                setSelectedOrgId(org.id);
+                onOpen?.(org);
+              }}
               role="button"
               tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                event.stopPropagation();
+                setSelectedOrgId(org.id);
+                onOpen?.(org);
+              }}
             >
               <span className="org-mark">{orgInitials(org.name)}</span>
               <span className="org-info">
                 <strong>{org.name}</strong>
                 <span>
-                  {org.membersCount ?? 1} member
-                  {(org.membersCount ?? 1) === 1 ? "" : "s"}
+                  {org.foldersCount ?? 0} folder
+                  {(org.foldersCount ?? 0) === 1 ? "" : "s"}
                 </span>
               </span>
-              {isAdmin && <div className="org-actions">
-                <button type="button" className="org-more" aria-label={`Options for ${org.name}`} title="Organization options" onClick={(event) => { event.stopPropagation(); setOpenMenuId(openMenuId === org.id ? null : org.id); }}><MoreVertical size={16} /></button>
-                {openMenuId === org.id && <div className="org-action-menu">
-                  <button type="button" onClick={(event) => { event.stopPropagation(); setOpenMenuId(null); onEdit(org); }}><Edit3 size={14} /> Rename</button>
-                  <button type="button" className="danger-action" onClick={(event) => { event.stopPropagation(); setOpenMenuId(null); onDelete(org); }}><Trash2 size={14} /> Delete</button>
-                </div>}
-              </div>}
+              {isAdmin && (
+                <div className="org-actions">
+                  <button
+                    type="button"
+                    className="org-more"
+                    aria-label={`Options for ${org.name}`}
+                    title="Organization options"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (openMenu?.id === org.id) {
+                        setOpenMenu(null);
+                        return;
+                      }
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      setOpenMenu({
+                        id: org.id,
+                        anchor: {
+                          left: rect.left,
+                          right: rect.right,
+                          top: rect.top,
+                          bottom: rect.bottom,
+                        },
+                      });
+                    }}
+                  >
+                    <MoreVertical size={16} />
+                  </button>
+                  {openMenu?.id === org.id && (
+                    <div
+                      ref={menuRef}
+                      className="image-action-menu org-action-menu"
+                      style={{
+                        left: position?.left ?? openMenu.anchor.left,
+                        top: position?.top ?? openMenu.anchor.bottom + 6,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setOpenMenu(null);
+                          onEdit(org);
+                        }}
+                      >
+                        <Edit3 size={14} /> Rename
+                      </button>
+                      <button
+                        type="button"
+                        className="danger-action"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setOpenMenu(null);
+                          onDelete(org);
+                        }}
+                      >
+                        <Trash2 size={14} /> Delete
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}
@@ -630,6 +865,14 @@ function Sidebar({
   onAddOrganization = () => {},
   onEditOrganization = () => {},
   onDeleteOrganization = () => {},
+  // Notifies the parent so the workspace can widen the sidebar column (the
+  // image playground shrinks) while the folders layer is open.
+  onFoldersLayerChange = () => {},
+  // Folder keys ("01", "02", ...) in most-recently-opened order, for
+  // FILE > Recent Categories.
+  recentCategoryKeys = [],
+  // Folders shown in the drawer are already scoped to the selected org by the
+  // parent, which fetches /api/categories?organizationId=...
 }) {
   const [categorySearch, setCategorySearch] = useState("");
   const [chooserTitle, setChooserTitle] = useState(null);
@@ -637,8 +880,38 @@ function Sidebar({
   const [expanded, setExpanded] = useState(() => new Set());
   const [draggedId, setDraggedId] = useState(null);
   const [dragOverId, setDragOverId] = useState(null);
-  // Which sidebar tab is showing: the existing folder tree, or organizations.
-  const [sidebarTab, setSidebarTab] = useState("folders");
+  // Sidebar always shows organizations; picking one slides the folders drawer
+  // in over the list. drawerClosing keeps the slide-out transition (grid
+  // shrink + content fade) running before the drawer unmounts; the timer is
+  // tracked so a quick re-open cancels it instead of being closed by it.
+  const [drawerOrg, setDrawerOrg] = useState(null);
+  const [drawerClosing, setDrawerClosing] = useState(false);
+  const drawerCloseTimer = useRef(null);
+  const closeFolderDrawer = () => {
+    setDrawerClosing(true);
+    onFoldersLayerChange(false);
+    // The CSS close transition runs .26s (starting a frame after commit), so
+    // wait past it before unmounting: at 260ms the content could unmount while
+    // the column still had width, flashing an empty/glitched bar for a frame.
+    // 320ms biases late — the column is already 0 wide by then, so waiting
+    // extra is invisible while unmounting early is not.
+    clearTimeout(drawerCloseTimer.current);
+    drawerCloseTimer.current = setTimeout(() => {
+      setDrawerOrg(null);
+      setDrawerClosing(false);
+      drawerCloseTimer.current = null;
+    }, 320);
+  };
+  // If the org whose drawer is open gets deleted elsewhere, slide it away.
+  useEffect(() => {
+    if (
+      drawerOrg &&
+      !organizations.some((org) => String(org.id) === String(drawerOrg.id))
+    )
+      closeFolderDrawer();
+  }, [organizations, drawerOrg]);
+  // Drop the pending close timer if the workspace unmounts mid-animation.
+  useEffect(() => () => clearTimeout(drawerCloseTimer.current), []);
 
   useEffect(() => {
     const openCategory = () => setChooserTitle("Open category");
@@ -650,9 +923,7 @@ function Sidebar({
       window.removeEventListener("recent-categories", openRecent);
     };
   }, []);
-  /*
-    return <><header className="topbar"><div className="brand"><Aperture size={18} /><span>IMAGERY</span><i>workspace</i></div><button className="mobile-menu icon-button"><Menu size={18} /></button><nav className="menus">{menuConfig.map((menu, index) => <div className="menu-wrap" key={menu.label} onMouseEnter={() => open !== null && open !== 'profile' && setOpen(index)}><button className={`menu-button ${open === index ? 'active' : ''}`} onClick={() => { const next = open === index ? null : index; if (next !== null) window.dispatchEvent(new Event('close-popovers')); setOpen(next) }}>{menu.label}<ChevronDown size={12} /></button>{open === index && <div className="dropdown">{menu.items.filter((item) => isAdmin || !ADMIN_ONLY_MENU_ROWS.has(item.label)).map((item) => <div key={item.label} className={`dropdown-row ${item.permission === 'download' && !canDownload ? 'disabled' : ''}`} onClick={() => { if (item.permission === 'download' && !canDownload) return; if (item.label === 'Create User') window.dispatchEvent(new Event('create-user')); else if (item.label === 'New Category') window.dispatchEvent(new Event('new-category')); else if (item.label === 'Open Category') window.dispatchEvent(new Event('open-category')); else if (item.label === 'Recent Categories') window.dispatchEvent(new Event('recent-categories')); else if (item.label === 'Preview Size') window.dispatchEvent(new Event('preview-size-menu')); else if (item.label.includes('Webcam')) setWebcamOpen(true); else if (item.label.includes('Upload')) onUpload(); else if (item.label === 'Sign Out and Exit' || item.label === 'Exit Application' || item.label === 'Lock Screen') window.dispatchEvent(new Event('sign-out')); setOpen(null) }}><span>{item.label}</span>{item.submenu && <ChevronRight size={13} />}</div>)}</div>}</div>)}</nav><div className="top-actions"><button className="icon-button"><Search size={16} /></button><button className="icon-button"><Bell size={16} /></button><div className="profile-wrap"><button className={`profile ${open === 'profile' ? 'active' : ''}`} onClick={() => { const next = open === 'profile' ? null : 'profile'; if (next) window.dispatchEvent(new Event('close-popovers')); setOpen(next) }} aria-expanded={open === 'profile'} title={user?.email || ''}><span className="avatar">{userInitials(user)}</span><span>{user?.username || 'Guest'}</span><ChevronDown size={13} /></button>{open === 'profile' && <ProfileMenu user={user} onSignOut={() => { setOpen(null); window.dispatchEvent(new Event('sign-out')) }} />}</div></div></header>{webcamOpen && <WebcamDialog onCancel={() => setWebcamOpen(false)} onCapture={(file) => { setWebcamOpen(false); window.dispatchEvent(new CustomEvent('webcam-captured', { detail: file })) }} />}</>
-  */
+
   useEffect(() => {
     if (!categoryAction) return undefined;
     const closeMenu = (event) => {
@@ -813,9 +1084,9 @@ function Sidebar({
           >
             <span className="category-name category-name-bold">
               {category.name}
-              <small>
-                {category.count} images
-                {hasChildren ? ` • ${visibleChildren.length} folders` : ""}
+              <small className="category-meta">
+                {category.count} image{category.count === 1 ? "" : "s"}
+                {hasChildren ? ` • ${visibleChildren.length} folder${visibleChildren.length === 1 ? "" : "s"}` : ""}
               </small>
             </span>
           </div>
@@ -854,22 +1125,8 @@ function Sidebar({
   };
 
   return (
-    <aside className="sidebar">
-      <div className="sidebar-tabs">
-        <button
-          className={`sidebar-tab ${sidebarTab === "folders" ? "active" : ""}`}
-          onClick={() => setSidebarTab("folders")}
-        >
-          <FileImage size={13} /> Folders
-        </button>
-        <button
-          className={`sidebar-tab ${sidebarTab === "organization" ? "active" : ""}`}
-          onClick={() => setSidebarTab("organization")}
-        >
-          <Building2 size={13} /> Organization
-        </button>
-      </div>
-      {sidebarTab === "organization" ? (
+    <>
+      <aside className="sidebar">
         <OrganizationPanel
           organizations={organizations}
           selectedOrgId={selectedOrgId}
@@ -877,72 +1134,121 @@ function Sidebar({
           onAdd={onAddOrganization}
           onEdit={onEditOrganization}
           onDelete={onDeleteOrganization}
+          onOpen={(org) => {
+            // Cancel a pending close so opening during the close animation
+            // doesn't get ripped shut by the old timeout.
+            clearTimeout(drawerCloseTimer.current);
+            drawerCloseTimer.current = null;
+            setSelectedOrgId(org.id);
+            setDrawerOrg(org);
+            onFoldersLayerChange(true);
+          }}
           isAdmin={isAdmin}
         />
-      ) : (
-        <>
-          <div className="category-heading category-heading-only">
-            <span>FOLDERS</span>
-            <span>{categories.length}</span>
-          </div>
-          <label className="category-search">
-            <Search size={13} />
-            <input
-              placeholder="Search folders"
-              value={categorySearch}
-              onChange={(event) => setCategorySearch(event.target.value)}
-            />
-          </label>
-          <div className="category-list">
-            {tree.map((category) => renderCategory(category))}
-          </div>
-          {tree.length === 0 && (
-            <p className="category-empty">No folders found</p>
-          )}
-          {isAdmin && (
-            <button className="new-category" onClick={onAdd}>
-              <Plus size={14} /> New folder
-            </button>
-          )}
-        </>
-      )}
-      {categoryAction && (
-        <CategoryActionMenu
-          action={categoryAction}
-          canDownload={canDownloadIn(
-            categoryKey(categoryAction.category.number),
-          )}
-          canManage={canManageIn(categoryKey(categoryAction.category.number))}
-          onAddChild={(category) => {
-            onAddChild(category);
-            setCategoryAction(null);
-          }}
-          onEdit={(category) => {
-            onEdit(category);
-            setCategoryAction(null);
-          }}
-          onDownload={(category) => {
-            onDownloadFolder(category);
-            setCategoryAction(null);
-          }}
-          onDelete={(category) => {
-            onDelete(category);
-            setCategoryAction(null);
-          }}
-        />
-      )}
-      {chooserTitle && (
-        <CategoryChooserDialog
-          title={chooserTitle}
-          categories={categories}
-          onSelect={(number) => {
-            setSelected(categoryKey(number));
-            setChooserTitle(null);
-          }}
-          onClose={() => setChooserTitle(null)}
-        />
-      )}
-    </aside>
+        {categoryAction && (
+          <CategoryActionMenu
+            action={categoryAction}
+            canDownload={canDownloadIn(
+              categoryKey(categoryAction.category.number),
+            )}
+            canManage={canManageIn(categoryKey(categoryAction.category.number))}
+            onAddChild={(category) => {
+              onAddChild(category);
+              setCategoryAction(null);
+            }}
+            onEdit={(category) => {
+              onEdit(category);
+              setCategoryAction(null);
+            }}
+            onDownload={(category) => {
+              onDownloadFolder(category);
+              setCategoryAction(null);
+            }}
+            onDelete={(category) => {
+              onDelete(category);
+              setCategoryAction(null);
+            }}
+          />
+        )}
+        {chooserTitle && (
+          <CategoryChooserDialog
+            title={chooserTitle}
+            categories={
+              chooserTitle === "Recent categories"
+                ? recentCategoryKeys
+                    .map((key) =>
+                      categories.find(
+                        (item) => categoryKey(item.number) === key,
+                      ),
+                    )
+                    .filter(Boolean)
+                : categories
+            }
+            emptyText={
+              chooserTitle === "Recent categories"
+                ? "No recent categories yet"
+                : undefined
+            }
+            onSelect={(number) => {
+              setSelected(categoryKey(number));
+              setChooserTitle(null);
+            }}
+            onClose={() => setChooserTitle(null)}
+          />
+        )}
+      </aside>
+      <section
+        className={`folders-column ${drawerOrg ? "open" : ""} ${drawerClosing ? "closing" : ""}`}
+        aria-hidden={!drawerOrg}
+      >
+        {drawerOrg && (
+          <>
+            <div className="category-heading category-heading-only">
+              <span className="folders-heading-left">
+                <button
+                  className="icon-button folders-back"
+                  onClick={() => closeFolderDrawer()}
+                  aria-label="Back to organizations"
+                  title="Back to organizations"
+                >
+                  <ChevronLeft size={14} />
+                </button>
+                <span>Folders</span>
+              </span>
+              <span className="category-count">{categories.length}</span>
+            </div>
+            <label className="category-search">
+              <Search size={13} />
+              <input
+                placeholder="Search folders"
+                value={categorySearch}
+                onChange={(event) => setCategorySearch(event.target.value)}
+              />
+            </label>
+            <div className="category-list">
+              {tree.map((category) => renderCategory(category))}
+            </div>
+            {tree.length === 0 && (
+              <p className="category-empty">No folders in {drawerOrg.name}</p>
+            )}
+            {isAdmin && (
+              <button
+                className="new-category"
+                onClick={onAdd}
+                disabled={!selectedOrgId}
+                title={
+                  selectedOrgId == null
+                    ? "Create an organization first"
+                    : undefined
+                }
+              >
+                <Plus size={14} /> New folder
+              </button>
+            )}
+          </>
+        )}
+      </section>
+    </>
   );
 }
 
@@ -955,6 +1261,7 @@ function UploadDialog({
   setName,
   documentId,
   setDocumentId,
+  documentIdTaken = false,
   onCancel,
   onConfirm,
 }) {
@@ -986,64 +1293,79 @@ function UploadDialog({
             <small>{(file.size / 1024 / 1024).toFixed(2)} MB</small>
           </div>
         </div>
-        <label className="dialog-label">
-          Image name
-          <input
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-        </label>
-        <label className="dialog-label">
-          Document ID (optional)
-          <input
-            placeholder="e.g. DOC-2024-001"
-            value={documentId}
-            onChange={(event) => setDocumentId(event.target.value)}
-          />
-        </label>
-        <label className="dialog-label">
-          Upload format
-          <select
-            value={format}
-            onChange={(event) => setFormat(event.target.value)}
-          >
-            <option value="original">Original format</option>
-            <option value="png">PNG</option>
-            <option value="jpeg">JPEG</option>
-            <option value="webp">WebP</option>
-          </select>
-        </label>
-        <label className="dialog-label">
-          Search category
-          <input
-            placeholder="Search categories"
-            value={categorySearch}
-            onChange={(event) => setCategorySearch(event.target.value)}
-          />
-        </label>
-        <div className="category-selection-label">
-          {category ? "Selected category" : "Select a category"}
-        </div>
-        <div className="category-results">
-          {matches.map((item) => {
-            const chosen = category === String(item.id);
-            return (
-              <button
-                className={chosen ? "chosen" : ""}
-                key={item.id}
-                onClick={() => setCategory(String(item.id))}
+        <div className="dialog-columns">
+          <div className="dialog-col">
+            <label className="dialog-label">
+              Image name
+              <input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+              />
+            </label>
+            <label className="dialog-label required">
+              Document ID *
+              <input
+                required
+                placeholder="e.g. DOC-2024-001"
+                value={documentId}
+                onChange={(event) => setDocumentId(event.target.value)}
+              />
+            </label>
+            {documentIdTaken ? (
+              <p className="dialog-hint dialog-hint-error">
+                That document ID is already used by another image in this
+                folder.
+              </p>
+            ) : (
+              <p className="dialog-hint">Required</p>
+            )}
+            <label className="dialog-label">
+              Upload format
+              <select
+                value={format}
+                onChange={(event) => setFormat(event.target.value)}
               >
-                <span>{String(item.number).padStart(2, "0")}</span>
-                <strong>{item.name}</strong>
-                {chosen && (
-                  <>
-                    <em>Selected</em>
-                    <Check size={14} />
-                  </>
-                )}
-              </button>
-            );
-          })}
+                <option value="original">Original format</option>
+                <option value="png">PNG</option>
+                <option value="jpeg">JPEG</option>
+                <option value="webp">WebP</option>
+              </select>
+            </label>
+          </div>
+          <div className="dialog-col">
+            <label className="dialog-label dialog-label-tight">
+              Search category
+              <input
+                placeholder="Search categories"
+                value={categorySearch}
+                onChange={(event) => setCategorySearch(event.target.value)}
+              />
+            </label>
+            <div className="category-selection-label">
+              {category ? "Selected category" : "Select a category"}
+            </div>
+            <div className="category-results">
+              {matches.map((item) => {
+                const chosen = category === String(item.id);
+                return (
+                  <button
+                    className={chosen ? "chosen" : ""}
+                    key={item.id}
+                    onClick={() => setCategory(String(item.id))}
+                  >
+                    <span>{String(item.number).padStart(2, "0")}</span>
+                    <strong>{item.name}</strong>
+                    {chosen && (
+                      <>
+                        <em>Selected</em>
+                        <Check size={14} />
+                      </>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
         <div className="dialog-actions">
           <button className="cancel-button" onClick={onCancel}>
@@ -1051,7 +1373,12 @@ function UploadDialog({
           </button>
           <button
             className="upload-button"
-            disabled={!category || !name.trim()}
+            disabled={
+              !category ||
+              !name.trim() ||
+              !cleanDocumentId(documentId) ||
+              documentIdTaken
+            }
             onClick={() => onConfirm(format)}
           >
             <Upload size={15} /> Add image
@@ -1110,63 +1437,70 @@ function BulkUploadDialog({
             </div>
           )}
         </div>
-        <label className="dialog-label">
-          Document ID prefix (optional)
-          <input
-            placeholder="e.g. DSC"
-            value={documentPrefix}
-            onChange={(event) => setDocumentPrefix(event.target.value)}
-          />
-        </label>
-        <p className="dialog-hint">
-          Each image is numbered in selection order, for example{" "}
-          {cleanDocumentId(documentPrefix) || "DOC"}-1,{" "}
-          {cleanDocumentId(documentPrefix) || "DOC"}-2. Leave it blank to add
-          document IDs later.
-        </p>
-        <label className="dialog-label">
-          Upload format (applies to all)
-          <select
-            value={format}
-            onChange={(event) => setFormat(event.target.value)}
-          >
-            <option value="original">Original format</option>
-            <option value="png">PNG</option>
-            <option value="jpeg">JPEG</option>
-            <option value="webp">WebP</option>
-          </select>
-        </label>
-        <label className="dialog-label">
-          Search category
-          <input
-            placeholder="Search categories"
-            value={categorySearch}
-            onChange={(event) => setCategorySearch(event.target.value)}
-          />
-        </label>
-        <div className="category-selection-label">
-          {category ? "Selected category" : "Select a category"}
-        </div>
-        <div className="category-results">
-          {matches.map((item) => {
-            const chosen = category === String(item.id);
-            return (
-              <button
-                className={chosen ? "chosen" : ""}
-                key={item.id}
-                onClick={() => setCategory(String(item.id))}
+        <div className="dialog-columns">
+          <div className="dialog-col">
+            <label className="dialog-label dialog-label-tight required">
+              Document ID prefix *
+              <input
+                required
+                placeholder="e.g. DSC"
+                value={documentPrefix}
+                onChange={(event) => setDocumentPrefix(event.target.value)}
+              />
+            </label>
+            <p className="dialog-hint">
+              Each image is numbered in selection order, for example{" "}
+              {cleanDocumentId(documentPrefix) || "DOC"}-1,{" "}
+              {cleanDocumentId(documentPrefix) || "DOC"}-2. A prefix is
+              required so every image gets a document ID.
+            </p>
+            <label className="dialog-label">
+              Upload format (applies to all)
+              <select
+                value={format}
+                onChange={(event) => setFormat(event.target.value)}
               >
-                <span>{String(item.number).padStart(2, "0")}</span>
-                <strong>{item.name}</strong>
-                {chosen && (
-                  <>
-                    <em>Selected</em>
-                    <Check size={14} />
-                  </>
-                )}
-              </button>
-            );
-          })}
+                <option value="original">Original format</option>
+                <option value="png">PNG</option>
+                <option value="jpeg">JPEG</option>
+                <option value="webp">WebP</option>
+              </select>
+            </label>
+          </div>
+          <div className="dialog-col">
+            <label className="dialog-label dialog-label-tight">
+              Search category
+              <input
+                placeholder="Search categories"
+                value={categorySearch}
+                onChange={(event) => setCategorySearch(event.target.value)}
+              />
+            </label>
+            <div className="category-selection-label">
+              {category ? "Selected category" : "Select a category"}
+            </div>
+            <div className="category-results">
+              {matches.map((item) => {
+                const chosen = category === String(item.id);
+                return (
+                  <button
+                    className={chosen ? "chosen" : ""}
+                    key={item.id}
+                    onClick={() => setCategory(String(item.id))}
+                  >
+                    <span>{String(item.number).padStart(2, "0")}</span>
+                    <strong>{item.name}</strong>
+                    {chosen && (
+                      <>
+                        <em>Selected</em>
+                        <Check size={14} />
+                      </>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
         <div className="dialog-actions">
           <button className="cancel-button" onClick={onCancel}>
@@ -1174,7 +1508,7 @@ function BulkUploadDialog({
           </button>
           <button
             className="upload-button"
-            disabled={!category}
+            disabled={!category || !cleanDocumentId(documentPrefix)}
             onClick={() => onConfirm(format)}
           >
             <Upload size={15} /> Upload {files.length} images
@@ -1229,11 +1563,15 @@ function DocumentIdDialog({
           />
         </label>
         <p className="dialog-hint">
-          Document IDs must be unique across the workspace. Leave the field blank
-          to clear the document ID for this image.
+          Document IDs must be unique within a folder, but the same ID can be
+          used in different folders. Leave the field blank to clear the
+          document ID for this image.
         </p>
         {error && (
-          <p className="format-note" style={{ color: "#b24f52", marginTop: 10 }}>
+          <p
+            className="format-note"
+            style={{ color: "#b24f52", marginTop: 10 }}
+          >
             {error}
           </p>
         )}
@@ -1305,7 +1643,6 @@ function FullscreenPreview({ image, zoom, setZoom, onClose }) {
 
   useEffect(() => {
     if (!image) return undefined;
-    // 'open' is null | nav index | 'profile', so both the nav dropdowns and the
     setSharpFailed(false);
     const closeOnEscape = (event) => {
       if (event.key === "Escape") onClose();
@@ -1422,7 +1759,7 @@ function CategoryDialog({
           Folder name
           <input
             autoFocus
-            placeholder="For example, Product photos"
+            placeholder="Product photos"
             value={name}
             onChange={(event) => setName(event.target.value)}
             onKeyDown={(event) => event.key === "Enter" && onConfirm()}
@@ -1464,9 +1801,13 @@ function ImageActionMenu({
   onDownload,
   onEditDocumentId,
   onDelete,
+  onMoveToFolder,
+  onCopyToFolder,
   onClose,
   canDownload = true,
   canEdit = false,
+  canMoveToFolder = false,
+  canCopyToFolder = false,
 }) {
   const menuRef = useRef(null);
   const anchor = action?.anchor;
@@ -1501,6 +1842,26 @@ function ImageActionMenu({
           <Tag size={14} /> Edit document ID
         </button>
       )}
+      {canMoveToFolder && (
+        <button
+          onClick={() => {
+            onMoveToFolder(action.image);
+            onClose();
+          }}
+        >
+          <MoveVertical size={14} /> Move to folder
+        </button>
+      )}
+      {canCopyToFolder && (
+        <button
+          onClick={() => {
+            onCopyToFolder(action.image);
+            onClose();
+          }}
+        >
+          <Copy size={14} /> Copy to folder
+        </button>
+      )}
       <button
         className="danger-action"
         onClick={() => {
@@ -1511,6 +1872,181 @@ function ImageActionMenu({
         <Trash2 size={14} /> Delete
       </button>
     </div>
+  );
+}
+
+// Shared by the Move and Copy dialogs. They differ only in the endpoint, the
+// copy on screen and the callback, so one component keeps them in sync.
+function ImageFolderDialog({
+  mode, // "move" | "copy"
+  image,
+  onClose,
+  onDone,
+  categories,
+  canUploadTo,
+  currentCategoryNumberKey,
+}) {
+  const [targetId, setTargetId] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  // The dialog component stays mounted between uses, so start fresh each time
+  // a different image is passed in.
+  useEffect(() => {
+    setTargetId("");
+    setError("");
+    setSaving(false);
+  }, [image]);
+
+  if (!image) return null;
+
+  const isMove = mode === "move";
+  const destinationOptions = categories
+    .filter(
+      (cat) =>
+        categoryKey(cat.number) !== currentCategoryNumberKey &&
+        canUploadTo(categoryKey(cat.number)),
+    )
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+  const submit = async () => {
+    if (!targetId || !Number.isInteger(image.id)) return;
+    setSaving(true);
+    setError("");
+    try {
+      const response = await apiFetch(
+        `/api/images/${image.id}/${isMove ? "move" : "copy"}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ categoryId: Number(targetId) }),
+        },
+      );
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          body.error ||
+            (isMove ? "Could not move the image." : "Could not copy the image."),
+        );
+      }
+      onDone({ image, categoryId: Number(targetId), result: body });
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const canSave = Boolean(targetId && !saving && Number.isInteger(image.id));
+
+  return (
+    <div className="modal-backdrop">
+      <div className="category-dialog">
+        <div className="dialog-header">
+          <div>
+            <p className="eyebrow">{isMove ? "MOVE IMAGE" : "COPY IMAGE"}</p>
+            <h2>{isMove ? "Move to folder" : "Copy to folder"}</h2>
+          </div>
+          <button className="icon-button" onClick={onClose} disabled={saving}>
+            <X size={16} />
+          </button>
+        </div>
+        <p className="dialog-description">
+          {isMove ? "Move" : "Copy"} <strong>{image.name}</strong>{" "}
+          {isMove
+            ? "to another folder."
+            : "into another folder. The original stays where it is and the copy keeps the same document ID."}
+        </p>
+        <label className="dialog-label">
+          Destination folder
+          <select
+            value={targetId}
+            onChange={(event) => setTargetId(event.target.value)}
+            disabled={saving}
+          >
+            <option value="" disabled>
+              Select a folder
+            </option>
+            {destinationOptions.map((cat) => (
+              <option key={cat.id} value={cat.id}>
+                {categoryKey(cat.number)} - {cat.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        {destinationOptions.length === 0 && (
+          <p className="format-note">
+            You don't have upload access to any other folder.
+          </p>
+        )}
+        {error && (
+          <p
+            className="format-note"
+            style={{ color: "#b24f52", marginTop: 10 }}
+          >
+            {error}
+          </p>
+        )}
+        <div className="dialog-actions">
+          <button className="cancel-button" onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
+          <button className="upload-button" onClick={submit} disabled={!canSave}>
+            {isMove ? <MoveVertical size={15} /> : <Copy size={15} />}{" "}
+            {saving
+              ? isMove
+                ? "Moving…"
+                : "Copying…"
+              : isMove
+                ? "Move"
+                : "Copy"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MoveImageDialog({
+  image,
+  onClose,
+  onMoved,
+  categories,
+  canUploadTo,
+  currentCategoryNumberKey,
+}) {
+  return (
+    <ImageFolderDialog
+      mode="move"
+      image={image}
+      onClose={onClose}
+      onDone={onMoved}
+      categories={categories}
+      canUploadTo={canUploadTo}
+      currentCategoryNumberKey={currentCategoryNumberKey}
+    />
+  );
+}
+
+function CopyImageDialog({
+  image,
+  onClose,
+  onCopied,
+  categories,
+  canUploadTo,
+  currentCategoryNumberKey,
+}) {
+  return (
+    <ImageFolderDialog
+      mode="copy"
+      image={image}
+      onClose={onClose}
+      onDone={onCopied}
+      categories={categories}
+      canUploadTo={canUploadTo}
+      currentCategoryNumberKey={currentCategoryNumberKey}
+    />
   );
 }
 
@@ -1607,30 +2143,16 @@ function PreviewSizeMenu({ size, anchor, setSize, onClose }) {
   );
 }
 
-const roleLabel = (role) =>
-  role === "admin" ? "Administrator" : "Standard user";
-
-// Opened from the topbar profile chip. Sign out dispatches the same 'sign-out'
-// event the EXIT menu uses, so App.signOut() stays the single sign-out path.
-function ProfileMenu({ user, onSignOut }) {
+// Opened from the sidebar footer's "..." chip. Renders the exact same
+// .sidebar-profile-menu markup as the Home and Admin sidebars (styled once in
+// Home.css) so the Sign out popup is identical on every page. Sign out
+// dispatches the same 'sign-out' event the EXIT menu uses, so App.signOut()
+// stays the single sign-out path.
+function ProfileMenu({ onSignOut }) {
   return (
-    <div className="profile-dropdown">
-      <p className="eyebrow">PROFILE</p>
-      <div className="profile-identity">
-        <span className="avatar">{userInitials(user)}</span>
-        <div>
-          <strong>{user?.username || "Guest"}</strong>
-          <span>{user?.email || "Not signed in"}</span>
-        </div>
-      </div>
-      <div className="detail-grid profile-detail">
-        <span>Role</span>
-        <strong>{roleLabel(user?.role)}</strong>
-        <span>User ID</span>
-        <strong>{user?.id ?? "—"}</strong>
-      </div>
-      <button className="profile-signout" onClick={onSignOut}>
-        <LogOut size={14} /> Sign out
+    <div className="sidebar-profile-menu">
+      <button onClick={onSignOut}>
+        <LogOut size={15} /> Sign out
       </button>
     </div>
   );
@@ -1651,8 +2173,8 @@ function DeleteDialog({ image, onCancel, onConfirm }) {
           </button>
         </div>
         <p className="dialog-description">
-          <strong>{image.name}</strong> and all generated files will be
-          permanently removed from the database and storage folder.
+          <strong>{image.name}</strong> will be permanently removed from the
+          database and storage folder.
         </p>
         <div className="dialog-actions">
           <button className="cancel-button" onClick={onCancel}>
@@ -1745,6 +2267,7 @@ function CategoryDeleteDialog({ category, onCancel, onConfirm }) {
 const PERMISSION_LEVELS = [
   { key: "none", label: "No access" },
   { key: "view", label: "View only" },
+  { key: "download", label: "View & download" },
   { key: "edit", label: "View + upload/download/edit details" },
   { key: "manage", label: "Full control (incl. delete)" },
 ];
@@ -1976,7 +2499,13 @@ async function convertForUpload(file, format) {
   }
 }
 
-function CategoryChooserDialog({ title, categories, onSelect, onClose }) {
+function CategoryChooserDialog({
+  title,
+  categories,
+  onSelect,
+  onClose,
+  emptyText = "No categories available",
+}) {
   return (
     <div className="modal-backdrop">
       <div className="category-dialog">
@@ -1995,13 +2524,123 @@ function CategoryChooserDialog({ title, categories, onSelect, onClose }) {
               <button key={item.id} onClick={() => onSelect(item.number)}>
                 <span>{String(item.number).padStart(2, "0")}</span>
                 <strong>{item.name}</strong>
-                <small>{item.count} images</small>
+                <small className="category-meta">{item.count} image{item.count === 1 ? "" : "s"}</small>
                 <ChevronRight size={14} />
               </button>
             ))
           ) : (
-            <p className="category-empty">No categories available</p>
+            <p className="category-empty">{emptyText}</p>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Small message box used when a menu command can't run yet (for example
+// "Print" with no image selected).
+function NoticeDialog({ notice, onClose }) {
+  if (!notice) return null;
+  return (
+    <div className="modal-backdrop">
+      <div className="category-dialog">
+        <div className="dialog-header">
+          <div>
+            <p className="eyebrow">NOTICE</p>
+            <h2>{notice.title}</h2>
+          </div>
+          <button className="icon-button" onClick={onClose}>
+            <X size={16} />
+          </button>
+        </div>
+        <p className="dialog-description">{notice.message}</p>
+        <div className="dialog-actions">
+          <button className="upload-button" autoFocus onClick={onClose}>
+            <Check size={15} /> OK
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// FILE > Properties. Shows the selected image (and the folder it lives in), or
+// just the open folder when no image is selected.
+function PropertiesDialog({
+  open,
+  image,
+  category,
+  organizationName,
+  subfolderCount,
+  onClose,
+}) {
+  if (!open) return null;
+  const formatSize = (bytes) => {
+    const value = Number(bytes || 0);
+    if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(2)} MB`;
+    return `${(value / 1024).toFixed(1)} KB`;
+  };
+  return (
+    <div className="modal-backdrop">
+      <div className="category-dialog">
+        <div className="dialog-header">
+          <div>
+            <p className="eyebrow">PROPERTIES</p>
+            <h2>{image ? image.name : category?.name}</h2>
+          </div>
+          <button className="icon-button" onClick={onClose}>
+            <X size={16} />
+          </button>
+        </div>
+        {image && (
+          <>
+            <p className="eyebrow" style={{ marginBottom: 6 }}>
+              IMAGE
+            </p>
+            <div className="detail-grid">
+              <span>File name</span>
+              <strong title={image.name}>{image.name}</strong>
+              <span>Original file</span>
+              <strong title={image.originalName}>{image.originalName}</strong>
+              <span>Document ID</span>
+              <strong>{image.documentId || "Not set"}</strong>
+              <span>File size</span>
+              <strong>{formatSize(image.size)}</strong>
+              <span>Image ID</span>
+              <strong>
+                {typeof image.id === "number" ? image.id : "Uploading…"}
+              </strong>
+              <span>Added</span>
+              <strong>{image.date}</strong>
+            </div>
+          </>
+        )}
+        {category && (
+          <>
+            <p
+              className="eyebrow"
+              style={{ marginTop: image ? 16 : 0, marginBottom: 6 }}
+            >
+              FOLDER
+            </p>
+            <div className="detail-grid">
+              <span>Name</span>
+              <strong>{category.name}</strong>
+              <span>Folder number</span>
+              <strong>{String(category.number).padStart(2, "0")}</strong>
+              <span>Images</span>
+              <strong>{category.count}</strong>
+              <span>Subfolders</span>
+              <strong>{subfolderCount}</strong>
+              <span>Organization</span>
+              <strong>{organizationName || "—"}</strong>
+            </div>
+          </>
+        )}
+        <div className="dialog-actions">
+          <button className="upload-button" onClick={onClose}>
+            <Check size={15} /> Close
+          </button>
         </div>
       </div>
     </div>
@@ -2035,7 +2674,8 @@ function WebcamDialog({ onCancel, onCapture }) {
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-    canvas.getContext("2d").drawImage(video, 0, 0);
+    const context = canvas.getContext("2d");
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
     canvas.toBlob(
       (blob) => {
         if (blob)
@@ -2073,6 +2713,7 @@ function WebcamDialog({ onCancel, onCapture }) {
             muted
             playsInline
             className="webcam-video"
+            style={{ transform: "scaleX(-1)" }}
           />
         )}
         <div className="dialog-actions">
@@ -2099,10 +2740,33 @@ function App() {
   const [selectedImage, setSelectedImage] = useState(null);
   const [view, setView] = useState("grid");
   const [previewSize, setPreviewSize] = useState(readPreviewSize);
+  const [tileResolution, setTileResolution] = useState(null);
   const [sizeMenu, setSizeMenu] = useState(null);
   const [search, setSearch] = useState("");
+  // Cross-folder document-id search: matches from the server, whether the
+  // dropdown is open, and an image to select once its folder has loaded.
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [pendingSelectId, setPendingSelectId] = useState(null);
+  const searchBoxRef = useRef(null);
+  // FILE menu: Properties dialog, a small message box, and the folders opened
+  // most recently (persisted so "Recent Categories" survives a reload).
+  const [propertiesOpen, setPropertiesOpen] = useState(false);
+  const [notice, setNotice] = useState(null);
+  const [recentCategoryKeys, setRecentCategoryKeys] = useState(() => {
+    try {
+      const saved = JSON.parse(
+        window.localStorage.getItem("imagery.recent-categories") || "[]",
+      );
+      return Array.isArray(saved) ? saved : [];
+    } catch {
+      return [];
+    }
+  });
   const [zoom, setZoom] = useState(100);
   const [queue, setQueue] = useState([]);
+  const [uploadError, setUploadError] = useState("");
   const [pendingFile, setPendingFile] = useState(null);
   const [pendingFiles, setPendingFiles] = useState([]);
   const [bulkCategory, setBulkCategory] = useState("");
@@ -2112,8 +2776,10 @@ function App() {
   const [downloadImage, setDownloadImage] = useState(null);
   const [deleteImage, setDeleteImage] = useState(null);
   const [imageAction, setImageAction] = useState(null);
-  // Document ids: the optional value typed during an upload, the optional prefix
-  // used to number a bulk batch, and the image being edited after the fact.
+  const [moveImage, setMoveImage] = useState(null);
+  const [copyImage, setCopyImage] = useState(null);
+  // Document ids: the mandatory value typed during an upload, the mandatory
+  // prefix used to number a bulk batch, and the image being edited after the fact.
   const [uploadDocumentId, setUploadDocumentId] = useState("");
   const [bulkDocumentPrefix, setBulkDocumentPrefix] = useState("");
   const [documentIdImage, setDocumentIdImage] = useState(null);
@@ -2121,6 +2787,9 @@ function App() {
   const [documentIdError, setDocumentIdError] = useState("");
   const [documentIdSaving, setDocumentIdSaving] = useState(false);
   const [previewEnabled, setPreviewEnabled] = useState(readPreviewEnabled);
+  // When the sidebar's folders layer is open the workspace widens the sidebar
+  // column, so the image playground shrinks to give the folder view space.
+  const [foldersLayerOpen, setFoldersLayerOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(
     () =>
       readPreviewEnabled() &&
@@ -2143,13 +2812,18 @@ function App() {
     () => window.localStorage.getItem("imaginary.theme") || "light",
   );
   const [homeView, setHomeView] = useState(true);
+  const [adminView, setAdminView] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [access, setAccess] = useState(null);
-  // Organizations shown in the sidebar's "Organization" tab (client-side only for now).
-  const [organizations, setOrganizations] = useState(readOrganizations);
-  const [selectedOrgId, setSelectedOrgId] = useState(() =>
-    readSelectedOrgId(readOrganizations()),
-  );
+  // Organizations come from the database (Organization table). Selecting one
+  // scopes the folder list: the categories request carries ?organizationId=.
+  const [organizations, setOrganizations] = useState([]);
+  const [selectedOrgId, setSelectedOrgId] = useState(() => {
+    try {
+      return window.localStorage.getItem("imagery.selected-organization");
+    } catch {}
+    return null;
+  });
   const [newOrgOpen, setNewOrgOpen] = useState(false);
   const [newOrgName, setNewOrgName] = useState("");
   const [editOrg, setEditOrg] = useState(null);
@@ -2163,10 +2837,18 @@ function App() {
   const category = categories.find(
     (item) => categoryKey(item.number) === selectedCategory,
   );
+  const categoryPath = getCategoryPath(category, categories);
+  const tileResolutionLabel = tileResolution;
+  const tileVariant =
+    (tileResolution && resolutionVariants[tileResolution]) || null;
+  // The search box filters the open folder by file name OR document ID.
+  const searchTerm = search.trim().toLowerCase();
   const visibleImages = images.filter(
     (image) =>
       image.category === selectedCategory &&
-      image.name.toLowerCase().includes(search.toLowerCase()),
+      (!searchTerm ||
+        image.name.toLowerCase().includes(searchTerm) ||
+        cleanDocumentId(image.documentId).toLowerCase().includes(searchTerm)),
   );
   const changeCategoryCount = (number, delta) =>
     setCategories((items) =>
@@ -2212,7 +2894,8 @@ function App() {
   };
 
   // Editing an image's own details (its document id) needs 'image.edit', which the
-  // server grants to the 'edit' and 'manage' levels.
+  // server grants to the 'edit' and 'manage' levels. Moving an image out of a
+  // folder also uses 'image.edit' on the source.
   const canEditImageIn = (categoryNumberKey) => {
     if (!access) return false;
     if (access.isAdmin) return true;
@@ -2221,6 +2904,20 @@ function App() {
       access.grants
         .find((entry) => Number(entry.number) === number)
         ?.permissions?.includes("image.edit"),
+    );
+  };
+
+  // Moving an image *into* a folder needs 'upload' on the destination (the same
+  // gate as uploading into a folder). Used to grey out folders in the picker
+  // that the user can't move into.
+  const canUploadTo = (categoryNumberKey) => {
+    if (!access) return false;
+    if (access.isAdmin) return true;
+    const number = Number(categoryNumberKey);
+    return Boolean(
+      access.grants
+        .find((entry) => Number(entry.number) === number)
+        ?.permissions?.includes("upload"),
     );
   };
 
@@ -2239,6 +2936,7 @@ function App() {
     setSelectedImage(null);
     setSelectedCategory("");
     setQueue([]);
+    setAdminView(false);
   };
 
   useEffect(() => {
@@ -2302,6 +3000,13 @@ function App() {
 
   useEffect(() => {
     const openNew = () => {
+      // Folders always belong to an organization: without one, guide the admin
+      // to create it first instead of a dialog that cannot save.
+      if (selectedOrgId == null) {
+        setNewOrgName("");
+        setNewOrgOpen(true);
+        return;
+      }
       setNewCategoryParentId("");
       setNewCategoryOpen(true);
     };
@@ -2329,7 +3034,7 @@ function App() {
       window.removeEventListener("create-user", openCreateUser);
       window.removeEventListener("sign-out", signOut);
     };
-  }, []);
+  }, [selectedOrgId]);
 
   useEffect(() => {
     window.localStorage.setItem("imagery.preview-size", previewSize);
@@ -2344,8 +3049,31 @@ function App() {
     if (!previewEnabled) setPreviewOpen(false);
   }, [previewEnabled]);
   useEffect(() => {
-    writeOrganizations(organizations);
-  }, [organizations]);
+    // The org list lives in the database; localStorage only remembers the
+    // selection. Once loaded, fall back to the first org when the saved id no
+    // longer exists (e.g. it was deleted from another session).
+    if (!user) return;
+    apiFetch("/api/organizations")
+      .then((response) => (response.ok ? response.json() : []))
+      .then((items) => {
+        const list = items.map((item) => ({
+          id: item.id,
+          name: item.name,
+          foldersCount: Number(item.foldersCount || 0),
+          membersCount: Number(item.membersCount || 1),
+        }));
+        setOrganizations(list);
+        setSelectedOrgId((current) => {
+          if (
+            current != null &&
+            list.some((org) => String(org.id) === String(current))
+          )
+            return current;
+          return list[0]?.id ?? null;
+        });
+      })
+      .catch(() => {});
+  }, [user]);
   useEffect(() => {
     try {
       if (selectedOrgId != null)
@@ -2355,6 +3083,9 @@ function App() {
         );
     } catch {}
   }, [selectedOrgId]);
+  useEffect(() => {
+    if (homeView || adminView) setFoldersLayerOpen(false);
+  }, [homeView, adminView]);
   useEffect(() => {
     const openHome = (event) => {
       if (event.target.closest(".brand")) setHomeView(true);
@@ -2409,9 +3140,27 @@ function App() {
       .finally(() => setAuthChecked(true));
   }, []);
 
+  // Folders of the organization selected in the sidebar. Every folder belongs
+  // to exactly one organization, so switching orgs re-fetches its folder tree.
   useEffect(() => {
     if (!user) return;
-    apiFetch("/api/categories")
+    if (selectedOrgId == null) {
+      setCategories([]);
+      return;
+    }
+    // Drop the previous org's folders immediately so the drawer never shows
+    // another organization's list while the new one is loading.
+    setCategories((current) => {
+      const stale = current.some(
+        (item) =>
+          item.organizationId &&
+          String(item.organizationId) !== String(selectedOrgId),
+      );
+      return stale ? [] : current;
+    });
+    apiFetch(
+      `/api/categories?organizationId=${encodeURIComponent(selectedOrgId)}`,
+    )
       .then((response) => (response.ok ? response.json() : []))
       .then((items) => {
         const savedOrder = readCategoryOrder();
@@ -2420,6 +3169,7 @@ function App() {
           number: item.number,
           name: item.name,
           parentId: item.parent_id || null,
+          organizationId: item.organization_id || selectedOrgId,
           count: Number(item.image_count || 0),
           accessLevel: item.access_level ?? null,
           order: savedOrder[item.id] ?? index,
@@ -2433,11 +3183,18 @@ function App() {
               ? current
               : categoryKey(landing.number),
           );
+        else setSelectedCategory(null);
       })
       .catch(() => {});
-  }, [user]);
+  }, [user, selectedOrgId]);
   useEffect(() => {
-    if (!user || !category?.id) return;
+    // No folder selected (or none in this organization): the gallery must not
+    // keep showing the previous folder's images or count.
+    if (!user || !category?.id) {
+      setImages((current) => (current.length ? [] : current));
+      setSelectedImage(null);
+      return;
+    }
     apiFetch(`/api/images?categoryId=${category.id}`)
       .then((response) => (response.ok ? response.json() : []))
       .then((items) => {
@@ -2448,7 +3205,7 @@ function App() {
           documentId: item.document_id || "",
           size: Number(item.file_size),
           date: new Date(item.created_at).toLocaleString(),
-          src: `http://localhost:4000/api/variants/${item.id}/web`,
+          src: `${import.meta.env.VITE_API_URL || 'http://localhost:4000'}/api/variants/${item.id}/web`,
           category: selectedCategory,
         }));
         setImages((current) => {
@@ -2514,6 +3271,15 @@ function App() {
     setWebcamOpen(false);
     beginUpload(file);
   };
+  const stepPreviewSize = (direction) => {
+    setView("grid");
+    setPreviewSize((current) => {
+      const index = previewSizeOrder.indexOf(current);
+      const next = index + direction;
+      if (next < 0 || next >= previewSizeOrder.length) return current;
+      return previewSizeOrder[next];
+    });
+  };
   const openViewer = (image) => {
     if (!image) return;
     setSelectedImage(image);
@@ -2523,7 +3289,117 @@ function App() {
   const showPreviewPanel = () => {
     if (previewEnabled) setPreviewOpen(true);
   };
+
+  // Document-ID search across every folder the user can access (in the selected
+  // organization). Debounced so it doesn't fire on every keystroke.
+  useEffect(() => {
+    const term = search.trim();
+    if (!user || !term) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setSearchLoading(true);
+    const timer = setTimeout(() => {
+      const orgQuery =
+        selectedOrgId != null
+          ? `&organizationId=${encodeURIComponent(selectedOrgId)}`
+          : "";
+      apiFetch(`/api/images/search?q=${encodeURIComponent(term)}${orgQuery}`)
+        .then((response) => (response.ok ? response.json() : []))
+        .then((items) => {
+          if (!cancelled) setSearchResults(items);
+        })
+        .catch(() => {
+          if (!cancelled) setSearchResults([]);
+        })
+        .finally(() => {
+          if (!cancelled) setSearchLoading(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [search, user, selectedOrgId]);
+
+  // Close the results dropdown on outside click or Escape.
+  useEffect(() => {
+    if (!searchOpen) return undefined;
+    const closeOnOutside = (event) => {
+      if (
+        !event.target.closest(".search-box") &&
+        !event.target.closest(".search-results-menu")
+      )
+        setSearchOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") setSearchOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [searchOpen]);
+
+  // After jumping to a search result's folder, select the image as soon as that
+  // folder's images have loaded.
+  useEffect(() => {
+    if (pendingSelectId == null) return;
+    const match = images.find(
+      (image) =>
+        image.id === pendingSelectId && image.category === selectedCategory,
+    );
+    if (match) {
+      setSelectedImage(match);
+      showPreviewPanel();
+      setPendingSelectId(null);
+    }
+  }, [pendingSelectId, images, selectedCategory]);
+
+  const openSearchResult = (result) => {
+    const target = categories.find(
+      (item) => String(item.id) === String(result.category_id),
+    );
+    if (!target) return;
+    setSelectedCategory(categoryKey(target.number));
+    setSearch(result.document_id || result.name || search);
+    setSearchOpen(false);
+    setPendingSelectId(result.id);
+  };
+
+  // Remember the folders the user opens (newest first, max 8) for
+  // FILE > Recent Categories.
+  useEffect(() => {
+    if (!selectedCategory) return;
+    setRecentCategoryKeys((current) =>
+      current[0] === selectedCategory
+        ? current
+        : [
+            selectedCategory,
+            ...current.filter((key) => key !== selectedCategory),
+          ].slice(0, 8),
+    );
+  }, [selectedCategory]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        "imagery.recent-categories",
+        JSON.stringify(recentCategoryKeys),
+      );
+    } catch {}
+  }, [recentCategoryKeys]);
   const beginCreateCategory = (parent = null) => {
+    // Folders always live inside an organization: without one, open the
+    // organization dialog instead so the admin creates it first.
+    if (selectedOrgId == null) {
+      setNewOrgName("");
+      setNewOrgOpen(true);
+      return;
+    }
     setNewCategoryParentId(parent?.id ? String(parent.id) : "");
     setNewCategoryOpen(true);
   };
@@ -2540,7 +3416,12 @@ function App() {
       const response = await apiFetch("/api/categories", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newCategoryName.trim(), parentId }),
+        body: JSON.stringify({
+          name: newCategoryName.trim(),
+          parentId,
+          // New folders land in the organization selected in the sidebar.
+          organizationId: selectedOrgId != null ? Number(selectedOrgId) : null,
+        }),
       });
       if (response.ok) {
         const item = await response.json();
@@ -2559,6 +3440,7 @@ function App() {
             number: item.number,
             name: item.name,
             parentId: item.parent_id || parentId,
+            organizationId: item.organization_id || selectedOrgId,
             count: 0,
             order,
           };
@@ -2686,17 +3568,41 @@ function App() {
     }
   };
 
-  // New organization from the sidebar's Organization tab. Client-side only,
-  // persisted to localStorage until a real /api/organizations endpoint exists.
-  const createOrganization = () => {
+  // Organizations are database rows now; create/rename/delete go through the
+  // API and the list is refreshed from GET /api/organizations on mutation.
+  const refreshOrganizations = () => {
+    apiFetch("/api/organizations")
+      .then((response) => (response.ok ? response.json() : []))
+      .then((items) =>
+        setOrganizations(
+          items.map((item) => ({
+            id: item.id,
+            name: item.name,
+            foldersCount: Number(item.foldersCount || 0),
+            membersCount: Number(item.membersCount || 1),
+          })),
+        ),
+      )
+      .catch(() => {});
+  };
+  const createOrganization = async () => {
     if (!newOrgName.trim()) return;
-    const org = {
-      id: crypto.randomUUID(),
-      name: newOrgName.trim(),
-      membersCount: 1,
-    };
-    setOrganizations((items) => [...items, org]);
-    setSelectedOrgId(org.id);
+    try {
+      const response = await apiFetch("/api/organizations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newOrgName.trim() }),
+      });
+      if (response.ok) {
+        const org = await response.json();
+        setOrganizations((items) => [
+          ...items,
+          { id: org.id, name: org.name, foldersCount: 0, membersCount: 1 },
+        ]);
+        setSelectedOrgId(String(org.id));
+        refreshOrganizations();
+      }
+    } catch {}
     setNewOrgName("");
     setNewOrgOpen(false);
   };
@@ -2704,23 +3610,47 @@ function App() {
     setEditOrg(organization);
     setEditOrgName(organization.name);
   };
-  const saveOrganization = () => {
+  const saveOrganization = async () => {
     if (!editOrg || !editOrgName.trim()) return;
     const name = editOrgName.trim();
-    setOrganizations((items) => items.map((item) => item.id === editOrg.id ? { ...item, name } : item));
+    try {
+      const response = await apiFetch(`/api/organizations/${editOrg.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (response.ok) {
+        setOrganizations((items) =>
+          items.map((item) =>
+            item.id === editOrg.id ? { ...item, name } : item,
+          ),
+        );
+      }
+    } catch {}
     setEditOrg(null);
     setEditOrgName("");
   };
   const deleteOrganization = (organization) => {
     setDeleteOrg(organization);
   };
-  const confirmDeleteOrganization = () => {
+  const confirmDeleteOrganization = async () => {
     if (!deleteOrg) return;
-    setOrganizations((items) => {
-      const next = items.filter((item) => item.id !== deleteOrg.id);
-      if (String(selectedOrgId) === String(deleteOrg.id)) setSelectedOrgId(next[0]?.id ?? null);
-      return next;
-    });
+    const deletedId = deleteOrg.id;
+    try {
+      const response = await apiFetch(`/api/organizations/${deletedId}`, {
+        method: "DELETE",
+      });
+      if (response.ok) {
+        const next = organizations.filter((item) => item.id !== deletedId);
+        setOrganizations(next);
+        if (String(selectedOrgId) === String(deletedId)) {
+          setSelectedOrgId(next[0]?.id ?? null);
+        }
+        // Folders of the deleted org were re-assigned, so refetch the folder
+        // list once the (possibly new) selection is in place.
+        refreshOrganizations();
+      }
+    } catch {}
     setDeleteOrg(null);
   };
 
@@ -2755,12 +3685,44 @@ function App() {
     }
   };
 
+  // Document ids are mandatory on upload and unique within a folder (the same id
+  // may exist in different folders, e.g. after "Copy to folder"). MySQL's default
+  // collation is case-insensitive, so compare folded values to catch a clash
+  // before the server answers 409.
+  const documentIdInUse = (
+    value,
+    ignoreId = null,
+    folderKey = selectedCategory,
+  ) => {
+    const key = cleanDocumentId(value).toLowerCase();
+    if (!key) return false;
+    return images.some(
+      (image) =>
+        image.id !== ignoreId &&
+        image.category === folderKey &&
+        cleanDocumentId(image.documentId).toLowerCase() === key,
+    );
+  };
+  // Folder key ("01", "02", ...) for a category id chosen in an upload dialog.
+  const folderKeyForId = (categoryId) => {
+    const target = categories.find(
+      (item) => String(item.id) === String(categoryId),
+    );
+    return target ? categoryKey(target.number) : selectedCategory;
+  };
   const confirmUpload = async (format = "original") => {
     if (!pendingFile || !uploadName.trim()) return;
+    const documentId = cleanDocumentId(uploadDocumentId);
     const target = categories.find(
       (item) => String(item.id) === String(uploadCategory),
     );
     if (!target) return;
+    if (
+      !documentId ||
+      documentIdInUse(documentId, null, categoryKey(target.number))
+    )
+      return;
+    setUploadError("");
     const convertedFile = await convertForUpload(pendingFile, format);
     const ext = convertedFile.name.includes(".")
       ? convertedFile.name.split(".").pop().toLowerCase()
@@ -2768,7 +3730,6 @@ function App() {
     const name = uploadName.includes(".")
       ? uploadName.trim().replace(/\.[^.]+$/, `.${ext}`)
       : `${uploadName.trim()}.${ext}`;
-    const documentId = cleanDocumentId(uploadDocumentId);
     const local = {
       id: crypto.randomUUID(),
       name,
@@ -2785,26 +3746,58 @@ function App() {
     setSelectedImage(local);
     showPreviewPanel();
     changeCategoryCount(target.number, 1);
+    const queueId = crypto.randomUUID();
     setQueue((items) =>
-      [
-        { id: crypto.randomUUID(), name, status: "Uploaded", progress: 100 },
-        ...items,
-      ].slice(0, QUEUE_MAX),
+      [{ id: queueId, name, status: "Uploaded", progress: 100 }, ...items].slice(
+        0,
+        QUEUE_MAX,
+      ),
     );
     setPendingFile(null);
     const body = new FormData();
     body.append("file", convertedFile);
     body.append("categoryId", target.id);
     body.append("name", name);
-    if (documentId) body.append("documentId", documentId);
-    await apiFetch("/api/uploads", { method: "POST", body }).catch(() => {});
+    body.append("documentId", documentId);
+    let response;
+    try {
+      response = await apiFetch("/api/uploads", { method: "POST", body });
+    } catch {
+      response = null;
+    }
+    // The gallery entry above is optimistic. Roll it back when the server refuses
+    // the upload (a document ID it already has, a duplicate image, ...) so the
+    // gallery never lists an image the server never stored.
+    if (!response || !response.ok) {
+      let message = "Upload failed";
+      if (response) {
+        const errorBody = await response.json().catch(() => ({}));
+        if (errorBody.error) message = errorBody.error;
+      }
+      setUploadError(message);
+      setImages((items) => items.filter((item) => item.id !== local.id));
+      setQueue((items) =>
+        items.map((item) =>
+          item.id === queueId
+            ? { ...item, status: "Failed", progress: 100 }
+            : item,
+        ),
+      );
+      setSelectedImage((current) =>
+        current?.id === local.id ? null : current,
+      );
+      changeCategoryCount(target.number, -1);
+    }
   };
   const confirmBulkUpload = async (format = "original") => {
     if (!pendingFiles.length) return;
+    const bulkPrefix = cleanDocumentId(bulkDocumentPrefix);
+    if (!bulkPrefix) return;
     const target = categories.find(
       (item) => String(item.id) === String(bulkCategory),
     );
     if (!target) return;
+    setUploadError("");
     const files = pendingFiles;
     setPendingFiles([]);
     const jobs = files.map((file) => ({
@@ -2822,6 +3815,7 @@ function App() {
     );
     let firstImage = null;
     for (const [index, job] of jobs.entries()) {
+      let localImage = null;
       try {
         setQueue((items) =>
           items.map((item) =>
@@ -2832,7 +3826,7 @@ function App() {
         );
         const convertedFile = await convertForUpload(job.file, format);
         const name = convertedFile.name;
-        const documentId = bulkDocumentId(bulkDocumentPrefix, index);
+        const documentId = bulkDocumentId(bulkPrefix, index);
         const local = {
           id: crypto.randomUUID(),
           name,
@@ -2845,16 +3839,31 @@ function App() {
           file: convertedFile,
         };
         if (!firstImage) firstImage = local;
+        localImage = local;
         setImages((items) => [local, ...items]);
         changeCategoryCount(target.number, 1);
         const body = new FormData();
         body.append("file", convertedFile);
         body.append("categoryId", target.id);
         body.append("name", name);
-        if (documentId) body.append("documentId", documentId);
-        await apiFetch("/api/uploads", { method: "POST", body }).catch(
-          () => {},
-        );
+        body.append("documentId", documentId);
+        let response;
+        try {
+          response = await apiFetch("/api/uploads", { method: "POST", body });
+        } catch {
+          response = null;
+        }
+        // A rejected upload (for example a document ID the server already has)
+        // must not be reported as uploaded, otherwise the queue and the local
+        // gallery both claim an image the server never stored.
+        if (!response || !response.ok) {
+          let message = "Upload rejected";
+          if (response) {
+            const errorBody = await response.json().catch(() => ({}));
+            if (errorBody.error) message = errorBody.error;
+          }
+          throw new Error(message);
+        }
         setQueue((items) =>
           items.map((item) =>
             item.id === job.id
@@ -2863,6 +3872,16 @@ function App() {
           ),
         );
       } catch (error) {
+        setUploadError(error.message || "Upload failed");
+        // Drop the optimistic gallery entry too: the server refused this file, so
+        // the folder must not keep showing it as present.
+        if (localImage) {
+          setImages((items) =>
+            items.filter((item) => item.id !== localImage.id),
+          );
+          if (firstImage?.id === localImage.id) firstImage = null;
+          changeCategoryCount(target.number, -1);
+        }
         setQueue((items) =>
           items.map((item) =>
             item.id === job.id
@@ -2886,6 +3905,33 @@ function App() {
         () => {},
       );
   };
+
+  // When an image is moved to another folder via the context menu's
+  // "Move to folder", remove it from the current grid immediately and keep the
+  // folder counts in step. The destination folder's images are re-fetched from
+  // the server the next time that folder is opened.
+  const handleImageMoved = ({ image, categoryId }) => {
+    if (!image) return;
+    setImages((items) => items.filter((item) => item.id !== image.id));
+    if (selectedImage?.id === image.id) setSelectedImage(null);
+    changeCategoryCount(image.category, -1);
+    const destination = categories.find(
+      (item) => String(item.id) === String(categoryId),
+    );
+    if (destination) changeCategoryCount(destination.number, 1);
+  };
+
+  // When an image is copied into another folder via the context menu's
+  // "Copy to folder", the source stays where it is. The destination is never
+  // the folder currently on screen, so only its count needs updating; the copy
+  // itself shows up when that folder is opened and its images are re-fetched.
+  const handleImageCopied = ({ categoryId }) => {
+    const destination = categories.find(
+      (item) => String(item.id) === String(categoryId),
+    );
+    if (destination) changeCategoryCount(destination.number, 1);
+  };
+
   // Document ids can be given at upload time or set/corrected later; this is the
   // "later" path. Images that are still uploading only exist locally (their id is
   // a uuid), so those are updated in state without a round trip.
@@ -2933,27 +3979,25 @@ function App() {
       setDocumentIdSaving(false);
     }
   };
-  const download = async (format) => {
-    if (!downloadImage) return;
+  // Downloads one image in the given format. Returns true on success. Used by
+  // the download dialog and by FILE > Download.
+  const downloadImageAs = async (target, format) => {
+    if (!target) return false;
     try {
       const originalUrl =
-        typeof downloadImage.id === "number"
-          ? `http://localhost:4000/api/variants/${downloadImage.id}/original`
-          : downloadImage.src;
+        typeof target.id === "number"
+          ? `${import.meta.env.VITE_API_URL || 'http://localhost:4000'}/api/variants/${target.id}/original`
+          : target.src;
       const sourceUrl =
-        format === "original" || format === "heic"
-          ? originalUrl
-          : downloadImage.src;
+        format === "original" || format === "heic" ? originalUrl : target.src;
       const blob =
-        downloadImage.file ||
+        target.file ||
         (await fetch(sourceUrl, { credentials: "include" }).then((response) =>
           response.blob(),
         ));
       let href = URL.createObjectURL(blob);
       let extension =
-        format === "original"
-          ? downloadImage.originalName.split(".").pop()
-          : format;
+        format === "original" ? target.originalName.split(".").pop() : format;
       if (format !== "original" && format !== "heic") {
         const image = new Image();
         image.src = href;
@@ -2977,15 +4021,152 @@ function App() {
       }
       const link = document.createElement("a");
       link.href = href;
-      link.download = `${downloadImage.name.replace(/\.[^.]+$/, "")}.${extension}`;
+      link.download = `${target.name.replace(/\.[^.]+$/, "")}.${extension}`;
       document.body.appendChild(link);
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(href), 1000);
-      setDownloadImage(null);
+      return true;
     } catch (error) {
       console.error("download:", error);
+      setNotice({
+        title: "Download failed",
+        message: "The image could not be downloaded. Please try again.",
+      });
+      return false;
     }
+  };
+  const download = async (format) => {
+    if (!downloadImage) return;
+    if (await downloadImageAs(downloadImage, format)) setDownloadImage(null);
+  };
+
+  // FILE > Download. The submenu entries come from menuConfig, so they are
+  // matched by wording: anything about a folder / ZIP / "all" downloads the open
+  // folder as a ZIP; PNG / JPEG / WebP / HEIC / Original download the selected
+  // image in that format; any other entry opens the download dialog for it.
+  const handleMenuDownload = (entry) => {
+    const text = String(entry).toLowerCase();
+    if (/\bzip\b|folder|categor|\ball\b|entire|whole/.test(text)) {
+      if (!category) {
+        setNotice({
+          title: "No folder open",
+          message: "Open a folder first, then choose Download again.",
+        });
+        return;
+      }
+      downloadFolder(category);
+      return;
+    }
+    if (!selectedImage) {
+      setNotice({
+        title: "Select an image first",
+        message:
+          "Click an image in the gallery, then choose Download again.",
+      });
+      return;
+    }
+    const format = text.includes("png")
+      ? "png"
+      : /jpe?g/.test(text)
+        ? "jpeg"
+        : text.includes("webp")
+          ? "webp"
+          : text.includes("heic")
+            ? "heic"
+            : text.includes("original")
+              ? "original"
+              : null;
+    if (format) downloadImageAs(selectedImage, format);
+    else setDownloadImage(selectedImage);
+  };
+
+  // FILE > Print. Prints the selected image on its own page using a hidden
+  // iframe, so nothing else on screen ends up on the paper.
+  const escapeHtml = (value) =>
+    String(value ?? "").replace(
+      /[&<>"']/g,
+      (char) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+          char
+        ],
+    );
+  const printSelectedImage = async () => {
+    const target = selectedImage;
+    if (!target) {
+      setNotice({
+        title: "Select an image first",
+        message: "Click the image you want to print, then choose Print again.",
+      });
+      return;
+    }
+    let objectUrl = null;
+    try {
+      // The hd variant is print-sharp and only needs view access; images that
+      // are still uploading only exist locally.
+      const source = typeof target.id === "number" ? fullSource(target) : target.src;
+      const blob = await fetch(source, { credentials: "include" }).then(
+        (response) => {
+          if (!response.ok) throw new Error("Image could not be loaded");
+          return response.blob();
+        },
+      );
+      objectUrl = URL.createObjectURL(blob);
+      const frame = document.createElement("iframe");
+      frame.setAttribute("aria-hidden", "true");
+      frame.style.cssText =
+        "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden";
+      document.body.appendChild(frame);
+      const doc = frame.contentDocument;
+      doc.open();
+      doc.write(
+        `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(target.name)}</title>` +
+          `<style>@page{margin:12mm}html,body{margin:0;height:100%}` +
+          `body{display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif}` +
+          `img{max-width:100%;max-height:calc(100vh - 28px);object-fit:contain}` +
+          `p{margin:8px 0 0;font-size:12px;color:#333}</style></head><body>` +
+          `<img id="print-image" src="${objectUrl}" alt="">` +
+          `<p>${escapeHtml(target.name)}${target.documentId ? ` &middot; ID ${escapeHtml(target.documentId)}` : ""}</p>` +
+          `</body></html>`,
+      );
+      doc.close();
+      const img = doc.getElementById("print-image");
+      await new Promise((resolve) => {
+        if (img.complete) resolve();
+        else {
+          img.onload = resolve;
+          img.onerror = resolve;
+        }
+      });
+      const cleanup = () => {
+        frame.remove();
+        URL.revokeObjectURL(objectUrl);
+      };
+      frame.contentWindow.onafterprint = cleanup;
+      // Fallback for browsers that never fire afterprint.
+      setTimeout(cleanup, 5 * 60 * 1000);
+      frame.contentWindow.focus();
+      frame.contentWindow.print();
+    } catch (error) {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      console.error("print:", error);
+      setNotice({
+        title: "Could not print",
+        message: "The image could not be loaded for printing.",
+      });
+    }
+  };
+
+  // FILE > Properties: the selected image and its folder, or just the open folder.
+  const openProperties = () => {
+    if (!selectedImage && !category) {
+      setNotice({
+        title: "Nothing to show",
+        message: "Open a folder or select an image to see its properties.",
+      });
+      return;
+    }
+    setPropertiesOpen(true);
   };
 
   // /api/categories and /api/images sit behind requireAuth, so the workspace
@@ -3019,9 +4200,11 @@ function App() {
             setTheme((current) => (current === "dark" ? "light" : "dark"))
           }
           categories={categories}
+          access={access}
           onOpenFolder={(folder) => {
             setSelectedCategory(categoryKey(folder.number));
             setHomeView(false);
+            setAdminView(false);
           }}
           onUpload={() => {
             setHomeView(false);
@@ -3029,11 +4212,34 @@ function App() {
           }}
           onCreateFolder={() => {
             setHomeView(false);
+            setAdminView(false);
             window.dispatchEvent(new Event("new-category"));
+          }}
+          onAdmin={() => {
+            setHomeView(false);
+            setAdminView(true);
           }}
         />
       </>
     );
+
+  if (adminView && isAdminUser)
+    return <AdminDashboard
+      user={user}
+      onHome={() => { setAdminView(false); setHomeView(true); }}
+      onFolders={() => setAdminView(false)}
+      theme={theme}
+      onThemeToggle={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+    />;
+
+  // The folder shown in FILE > Properties: the selected image's own folder when
+  // an image is selected, otherwise the open folder.
+  const propertiesCategory =
+    (selectedImage &&
+      categories.find(
+        (item) => categoryKey(item.number) === selectedImage.category,
+      )) ||
+    category;
 
   return (
     <div className="app-shell" data-theme={theme}>
@@ -3054,8 +4260,49 @@ function App() {
         user={user}
         canDownload={canDownloadIn(selectedCategory)}
         isAdmin={isAdminUser}
+        activeView={view}
+        previewSizeKey={previewSize}
+        activeResolution={tileResolutionLabel}
+        onViewChange={setView}
+        onPreviewSize={(entry) => {
+          const key = previewSizeKeys[entry];
+          if (key) {
+            setView("grid");
+            setPreviewSize(key);
+          }
+        }}
+        onZoomIn={() => stepPreviewSize(1)}
+        onZoomOut={() => stepPreviewSize(-1)}
+        onProperties={openProperties}
+        onPrint={printSelectedImage}
+        onDownloadEntry={handleMenuDownload}
+        onFitToScreen={() => {
+          setView("grid");
+          setPreviewSize("medium");
+        }}
+        onResolution={(entry) => {
+          if (entry === "Custom") {
+            setView("grid");
+            setPreviewSize("extra");
+            setTileResolution(null);
+            return;
+          }
+          const variant = resolutionVariants[entry];
+          if (variant) {
+            setView("grid");
+            setTileResolution(entry);
+          }
+        }}
+        onAdmin={() => {
+          setHomeView(false);
+          setAdminView(true);
+        }}
       />
-      <div className={`workspace ${previewOpen ? "" : "preview-closed"}`}>
+      <div
+        className={`workspace ${previewOpen ? "" : "preview-closed"} ${
+          foldersLayerOpen ? "folder-layer-open" : ""
+        }`}
+      >
         <Sidebar
           categories={categories}
           selected={selectedCategory}
@@ -3067,6 +4314,8 @@ function App() {
           canDownloadIn={canDownloadIn}
           canManageIn={canManageIn}
           isAdmin={isAdminUser}
+          onFoldersLayerChange={setFoldersLayerOpen}
+          recentCategoryKeys={recentCategoryKeys}
           organizations={organizations}
           selectedOrgId={selectedOrgId}
           setSelectedOrgId={setSelectedOrgId}
@@ -3084,24 +4333,25 @@ function App() {
             </button>
             <div className="breadcrumb">
               <span>Files</span>
-              <ChevronRight size={13} />
-              <strong>{category?.name || "No folder selected"}</strong>
+              {categoryPath.length ? (
+                categoryPath.map((folder, index) => (
+                  <span className="breadcrumb-segment" key={folder.id}>
+                    <ChevronRight size={13} aria-hidden="true" />
+                    {index === categoryPath.length - 1 ? (
+                      <strong>{folder.name}</strong>
+                    ) : (
+                      <span className="breadcrumb-parent">{folder.name}</span>
+                    )}
+                  </span>
+                ))
+              ) : (
+                <>
+                  <ChevronRight size={13} aria-hidden="true" />
+                  <strong>No folder selected</strong>
+                </>
+              )}
             </div>
             <div className="toolbar-actions">
-              <label className="search-box">
-                <Search size={14} />
-                <input
-                  placeholder="Search files"
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                />
-              </label>
-              <button
-                className="icon-button"
-                onClick={() => setView(view === "grid" ? "list" : "grid")}
-              >
-                {view === "grid" ? <List size={16} /> : <Grid2X2 size={16} />}
-              </button>
               {view === "grid" && (
                 <button
                   className="size-control icon-button"
@@ -3120,38 +4370,57 @@ function App() {
                   <ChevronDown size={12} />
                 </button>
               )}
-              {
-                <button
-                  className={`preview-toggle ${previewEnabled ? "active" : ""}`}
-                  onClick={() =>
-                    setPreviewEnabled((enabled) => {
-                      const next = !enabled;
-                      if (next) setPreviewOpen(true);
-                      return next;
-                    })
-                  }
-                  title={
-                    previewEnabled
-                      ? "Turn preview panel off permanently"
-                      : "Turn preview panel on permanently"
-                  }
-                >
-                  <PanelRight size={15} />
-                  <span>Preview {previewEnabled ? "on" : "off"}</span>
-                </button>
-              }
+              <button
+                className={`preview-toggle ${previewEnabled ? "active" : ""}`}
+                onClick={() =>
+                  setPreviewEnabled((enabled) => {
+                    const next = !enabled;
+                    if (next) setPreviewOpen(true);
+                    return next;
+                  })
+                }
+                title={
+                  previewEnabled
+                    ? "Turn preview panel off permanently"
+                    : "Turn preview panel on permanently"
+                }
+              >
+                <PanelRight size={15} />
+              </button>
+              <button
+                className="icon-button"
+                onClick={() => setView(view === "grid" ? "list" : "grid")}
+                title={
+                  view === "grid" ? "Switch to list view" : "Switch to grid view"
+                }
+              >
+                {view === "grid" ? <List size={16} /> : <Grid2X2 size={16} />}
+              </button>
             </div>
           </div>
-          <div className="content-heading">
-            <div>
-              <p className="eyebrow">
-                {category ? `FOLDER ${selectedCategory}` : "NO FOLDER"}
-              </p>
-              <h1>{category?.name || "Create a folder to begin"}</h1>
-              <span className="muted">
-                {visibleImages.length} images <span className="sep">•</span>{" "}Double-click for full screen
-              </span>
-            </div>
+          {/* Reference layout: the search box lives on its own full-width
+              second row under the breadcrumb/controls row. The results popup
+              anchors to searchBoxRef.getBoundingClientRect(), so it follows the
+              box to the new row automatically. */}
+          <div className="toolbar-search">
+            <label className="search-box" ref={searchBoxRef}>
+              <Search size={14} />
+              <input
+                placeholder="Search by name or document ID"
+                value={search}
+                onFocus={() => setSearchOpen(true)}
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                  setSearchOpen(true);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && searchResults[0])
+                    openSearchResult(searchResults[0]);
+                }}
+              />
+            </label>
+          </div>
+          <div className="content-heading content-heading-actions">
             <button
               className="upload-button"
               disabled={!category}
@@ -3180,7 +4449,7 @@ function App() {
                   {category
                     ? "Upload or drag and drop images"
                     : isAdminUser
-                      ? "Create a folder before uploading an image."
+                      ? ""
                       : "Ask an administrator to grant you access to a folder."}
                 </span>
                 {category ? (
@@ -3190,6 +4459,20 @@ function App() {
                   >
                     Choose images
                   </button>
+                ) : !selectedOrgId ? (
+                  // Folders always live inside an organization: without one the
+                  // admin is pointed at creating it instead of a dead button.
+                  isAdminUser && (
+                    <button
+                      className="empty-upload"
+                      onClick={() => {
+                        setNewOrgName("");
+                        setNewOrgOpen(true);
+                      }}
+                    >
+                      + Create organization
+                    </button>
+                  )
                 ) : (
                   isAdminUser && (
                     <button
@@ -3216,14 +4499,13 @@ function App() {
                   >
                     <div className="image-wrap">
                       <img
-                        src={tileSource(image, previewSize)}
+                        src={tileSource(image, previewSize, tileVariant)}
                         alt={image.name}
                         onError={(event) => {
                           if (event.currentTarget.src !== image.src)
                             event.currentTarget.src = image.src;
                         }}
                       />
-                      <span className="file-type">IMAGE</span>
                       <button
                         className="card-more"
                         title="Image actions"
@@ -3365,6 +4647,19 @@ function App() {
               <span>Select an image to preview it here.</span>
             </div>
           )}
+          {uploadError && (
+            <div className="upload-error">
+              <X size={14} />
+              <span>{uploadError}</span>
+              <button
+                className="upload-error-dismiss"
+                onClick={() => setUploadError("")}
+                aria-label="Dismiss error"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          )}
           <div className="queue-panel">
             <div className="queue-title">
               <span>UPLOAD QUEUE</span>
@@ -3413,14 +4708,68 @@ function App() {
           onClose={() => setSizeMenu(null)}
         />
       )}
+      {searchOpen &&
+        search.trim() &&
+        searchBoxRef.current &&
+        (() => {
+          const rect = searchBoxRef.current.getBoundingClientRect();
+          const width = Math.max(rect.width, 340);
+          return (
+            <div
+              className="image-action-menu search-results-menu"
+              style={{
+                left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+                top: rect.bottom + 6,
+                width,
+                maxHeight: 360,
+                overflowY: "auto",
+              }}
+            >
+              <p className="preview-size-title">Document id :</p>
+              {searchLoading && <p className="category-empty">Searching…</p>}
+              {!searchLoading && searchResults.length === 0 && (
+                <p className="category-empty">
+                  No document ID matches “{search.trim()}”
+                </p>
+              )}
+              {searchResults.map((result) => (
+                <button
+                  key={result.id}
+                  onClick={() => openSearchResult(result)}
+                  title={`${result.original_name} — ${result.category_name}`}
+                >
+                  <Tag size={14} />
+                  <span
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "flex-start",
+                      minWidth: 0,
+                      textAlign: "left",
+                    }}
+                  >
+                    <strong>{result.document_id}</strong>
+                    <small style={{ opacity: 0.7 }}>
+                      {result.original_name} · {result.category_name}
+                    </small>
+                  </span>
+                </button>
+              ))}
+            </div>
+          );
+        })()}
       <ImageActionMenu
         action={imageAction}
         onDownload={setDownloadImage}
         onEditDocumentId={openDocumentIdEditor}
         onDelete={setDeleteImage}
+        onMoveToFolder={setMoveImage}
+        onCopyToFolder={setCopyImage}
         onClose={() => setImageAction(null)}
         canDownload={canDownloadIn(imageAction?.image?.category)}
         canEdit={canEditImageIn(imageAction?.image?.category)}
+        canMoveToFolder={canEditImageIn(imageAction?.image?.category)}
+        canCopyToFolder={canEditImageIn(imageAction?.image?.category)}
       />
       <UploadDialog
         file={pendingFile}
@@ -3431,6 +4780,11 @@ function App() {
         setName={setUploadName}
         documentId={uploadDocumentId}
         setDocumentId={setUploadDocumentId}
+        documentIdTaken={documentIdInUse(
+          uploadDocumentId,
+          null,
+          folderKeyForId(uploadCategory),
+        )}
         onCancel={() => setPendingFile(null)}
         onConfirm={confirmUpload}
       />
@@ -3456,6 +4810,22 @@ function App() {
           setDocumentIdError("");
         }}
         onSave={saveDocumentId}
+      />
+      <MoveImageDialog
+        image={moveImage}
+        onClose={() => setMoveImage(null)}
+        onMoved={handleImageMoved}
+        categories={categories}
+        canUploadTo={canUploadTo}
+        currentCategoryNumberKey={selectedCategory}
+      />
+      <CopyImageDialog
+        image={copyImage}
+        onClose={() => setCopyImage(null)}
+        onCopied={handleImageCopied}
+        categories={categories}
+        canUploadTo={canUploadTo}
+        currentCategoryNumberKey={selectedCategory}
       />
       <DownloadDialog
         image={downloadImage}
@@ -3536,6 +4906,21 @@ function App() {
         onCancel={() => setDeleteOrg(null)}
         onConfirm={confirmDeleteOrganization}
       />
+      <PropertiesDialog
+        open={propertiesOpen}
+        image={selectedImage}
+        category={propertiesCategory}
+        organizationName={
+          organizations.find(
+            (org) => String(org.id) === String(propertiesCategory?.organizationId),
+          )?.name
+        }
+        subfolderCount={
+          propertiesCategory ? childCategoryIds(propertiesCategory.id).length : 0
+        }
+        onClose={() => setPropertiesOpen(false)}
+      />
+      <NoticeDialog notice={notice} onClose={() => setNotice(null)} />
     </div>
   );
 }

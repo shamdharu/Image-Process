@@ -1,9 +1,8 @@
 
 export const menuConfig = [
   {
-    label: 'FILE',
+    label: 'File',
     items: [
-      { label: 'Create User', permission: 'user.create' },
       { label: 'New Category', permission: 'category.create' },
       { label: 'Open Category', permission: 'category.view' },
       { label: 'Recent Categories', permission: 'category.view' },
@@ -18,7 +17,7 @@ export const menuConfig = [
   },
 
   {
-    label: 'UPLOADS',
+    label: 'Uploads',
     items: [
       { label: 'Upload from File Browser', permission: 'upload' },
       { label: 'Capture from Webcam', permission: 'upload' },
@@ -28,7 +27,7 @@ export const menuConfig = [
   },
 
   {
-    label: 'VIEW',
+    label: 'View',
     items: [
       { label: 'Gallery / Grid view', permission: 'view' },
       { label: 'List view', permission: 'view' },
@@ -54,7 +53,7 @@ export const menuConfig = [
   },
 
   {
-    label: 'EXIT',
+    label: 'Exit',
     items: [
       { label: 'Close Current Category', permission: 'category.view' },
       { label: 'Lock Screen', permission: 'session.lock' },
@@ -64,7 +63,7 @@ export const menuConfig = [
   },
 
   {
-    label: 'HELP',
+    label: 'Help',
     items: [
       { label: 'User Guide', permission: 'help.view' },
       { label: 'Keyboard Shortcuts', permission: 'help.view' },

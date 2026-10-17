@@ -3,7 +3,7 @@ import { pool } from '../db.js';
 import { hashPassword } from '../services/passwords.js';
 import { requireAdmin } from '../middleware/permissions.js';
 
-const VALID_LEVELS = new Set(['view', 'edit', 'manage']);
+const VALID_LEVELS = new Set(['view', 'download', 'edit', 'manage']);
 // Mirrors EMAIL_PATTERN in client/src/App.jsx.
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -47,7 +47,7 @@ async function resolveUsername(connection, requested, email) {
 // Username is optional - CreateUserDialog only requires email + password, and
 // this matches exactly what its submit() sends.
 usersRouter.post('/api/users', requireAdmin, async (req, res) => {
-  const { username, email, password, role = 'user', permissions = [] } = req.body;
+  const { username, email, password, permissions = [] } = req.body;
   const requestedUsername = username?.trim() || '';
   const normalizedEmail = email?.trim().toLowerCase() || '';
 
@@ -56,9 +56,6 @@ usersRouter.post('/api/users', requireAdmin, async (req, res) => {
   }
   if (!EMAIL_PATTERN.test(normalizedEmail)) {
     return res.status(400).json({ error: 'Enter a valid email address' });
-  }
-  if (!['admin', 'user'].includes(role)) {
-    return res.status(400).json({ error: 'Role must be "admin" or "user"' });
   }
 
   const [[existingEmail]] = await pool.query('SELECT id FROM User WHERE email = ?', [normalizedEmail]);
@@ -69,10 +66,10 @@ usersRouter.post('/api/users', requireAdmin, async (req, res) => {
     if (existingUsername) return res.status(409).json({ error: 'Username already in use' });
   }
 
-  // Admins implicitly have full access, so ignore any submitted permissions for them.
-  const grants = role === 'user'
-    ? permissions.filter((entry) => entry?.categoryId && VALID_LEVELS.has(entry.level))
-    : [];
+  // The seeded administrator is the only admin account. Every account created
+  // here is a standard user and only receives explicit folder grants.
+  const role = 'user';
+  const grants = permissions.filter((entry) => entry?.categoryId && VALID_LEVELS.has(entry.level));
 
   const connection = await pool.getConnection();
   try {
@@ -104,7 +101,36 @@ usersRouter.post('/api/users', requireAdmin, async (req, res) => {
   }
 });
 
+usersRouter.put('/api/users/:userId/permissions', requireAdmin, async (req, res) => {
+  const userId = Number(req.params.userId);
+  const permissions = Array.isArray(req.body?.permissions) ? req.body.permissions : [];
+  const grants = permissions.filter((entry) => entry?.categoryId && VALID_LEVELS.has(entry.level));
+  const [[target]] = await pool.query('SELECT id, role FROM User WHERE id = ?', [userId]);
+  if (!target) return res.sendStatus(404);
+  if (target.role === 'admin') return res.status(400).json({ error: 'The administrator always has full access' });
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    await connection.query('DELETE FROM CategoryPermission WHERE user_id = ?', [userId]);
+    if (grants.length) await connection.query(
+      'INSERT INTO CategoryPermission (user_id, category_id, level) VALUES ?',
+      [grants.map((grant) => [userId, Number(grant.categoryId), grant.level])]
+    );
+    await connection.commit();
+    res.json({ permissions: grants });
+  } catch (error) {
+    await connection.rollback();
+    res.status(500).json({ error: error.message });
+  } finally {
+    connection.release();
+  }
+});
+
 usersRouter.delete('/api/users/:userId', requireAdmin, async (req, res) => {
+  if (Number(req.params.userId) === req.user.id) return res.status(400).json({ error: 'You cannot remove your own account' });
+  const [[target]] = await pool.query('SELECT role FROM User WHERE id = ?', [req.params.userId]);
+  if (target?.role === 'admin') return res.status(400).json({ error: 'The administrator account cannot be removed' });
   const [result] = await pool.query('DELETE FROM User WHERE id = ?', [req.params.userId]);
   if (!result.affectedRows) return res.sendStatus(404);
   res.sendStatus(204);
