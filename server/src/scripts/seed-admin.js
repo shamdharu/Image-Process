@@ -93,7 +93,9 @@ export async function seedAdmin() {
     );
 
   } finally {
-    await pool.end();
+    // NOTE: do NOT call pool.end() here -- when seedAdmin() is called at
+    // server startup the pool must stay open for all subsequent requests.
+    // pool.end() is only needed when running this script standalone.
   }
 }
 
@@ -105,9 +107,10 @@ if (
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
   seedAdmin()
+    .then(() => pool.end())
     .then(() => process.exit(0))
     .catch((error) => {
       console.error('Seed failed:', error.message);
-      process.exit(1);
+      pool.end().finally(() => process.exit(1));
     });
 }
