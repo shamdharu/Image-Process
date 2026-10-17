@@ -1,0 +1,23 @@
+/* The Admin page deliberately shares Home's exact navigation shell. */
+.admin-page {
+  height: 100vh;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.admin-topbar {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+/* The scroll container spans the whole area next to the fixed navigation
+   (exactly like .home-content), so the page scrollbar sits against the window
+   edge. The reading-width cap lives on the children, see AdminDashboard.css;
+   otherwise the scrollbar renders beside the centered column mid-page. */
+.admin-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+@media (max-width: 720px) {

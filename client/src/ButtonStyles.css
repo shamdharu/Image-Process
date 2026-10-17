@@ -1,0 +1,113 @@
+button {
+  font-family: inherit;
+}
+
+button:focus-visible {
+  outline: 3px solid rgb(69 107 155 / 28%);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.upload-button,
+.admin-create,
+.admin-save,
+.home-new-page {
+  height: auto;
+  min-height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #557ba9 0%, #3f628f 100%);
+  color: #fff;
+  box-shadow: 0 4px 10px rgb(69 107 155 / 16%);
+  transition:
+    background 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+.upload-button:hover:not(:disabled),
+.admin-create:hover:not(:disabled),
+.admin-save:hover:not(:disabled),
+.home-new-page:hover:not(:disabled) {
+  background: linear-gradient(180deg, #456b9b 0%, #34577f 100%);
+  box-shadow: 0 7px 16px rgb(69 107 155 / 20%);
+  transform: translateY(-1px);
+}
+
+.upload-button:active:not(:disabled),
+.admin-create:active:not(:disabled),
+.admin-save:active:not(:disabled),
+.home-new-page:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.app-shell .main-content .content-heading .upload-button {
+  min-height:40px;
+  height:40px;
+  padding:0 14px;
+  border-radius:6px;
+  background:linear-gradient(180deg, #557ba9 0%, #3f628f 100%);
+  box-shadow:0 4px 10px rgb(69 107 155 / 16%);
+  font-size:14px;
+}
+
+.app-shell .main-content .content-heading .upload-button:hover:not(:disabled) {
+  background:linear-gradient(180deg, #456b9b 0%, #34577f 100%);
+  box-shadow:0 7px 16px rgb(69 107 155 / 20%);
+}
+
+.cancel-button,
+.admin-secondary,
+.admin-back,
+.home-capture,
+.home-heading-actions > button:not(.home-new-page) {
+  min-height: 40px;
+  border: 1px solid var(--line, #cbd7d9);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  color: var(--ink, #172a33);
+  transition:
+    color 0.18s ease,
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.cancel-button:hover:not(:disabled),
+.admin-secondary:hover:not(:disabled),
+.admin-back:hover:not(:disabled),
+.home-capture:hover:not(:disabled),
+.home-heading-actions > button:not(.home-new-page):hover:not(:disabled) {
+  border-color: #aebed2;
+  background: #f0f4f9;
+  color: #34577f;
+}
+
+.download-button,
+.empty-upload,
+.new-category,
+.policy-button {
+  border-radius: 8px;
+  transition:
+    color 0.18s ease,
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    transform 0.18s ease;
+}
+
+.delete-button {
+  min-height: 40px;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #b84343 0%, #963232 100%);
+  box-shadow: 0 7px 16px rgba(150, 50, 50, 0.16);
+  transition: background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.delete-button:hover:not(:disabled) {
+  background: linear-gradient(180deg, #c34b4b 0%, #812828 100%);
+  box-shadow: 0 9px 18px rgba(150, 50, 50, 0.22);
+}

@@ -4,19 +4,3 @@
 body { margin: 0; min-width: 320px; }
 button, input { font: inherit; }
 button { border: 0; cursor: pointer; }
-
-/* User accessibility preference: never render UI text below 20px. */
-.app-shell *,
-.home-page *,
-.ai-chat *,
-.login-page *,
-.app-shell *::before,
-.app-shell *::after,
-.home-page *::before,
-.home-page *::after,
-.ai-chat *::before,
-.ai-chat *::after,
-.login-page *::before,
-.login-page *::after {
-	font-size: max(20px, 1em) !important;
-}

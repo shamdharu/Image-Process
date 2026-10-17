@@ -10,6 +10,7 @@ import { pool } from '../db.js';
 // is exactly how the "view only can still download" bug happened).
 export const LEVEL_PERMISSIONS = {
   view: ['view'],
+  download: ['view', 'download'],
   edit: ['view', 'download', 'upload', 'image.edit'],
   manage: ['view', 'download', 'upload', 'image.edit', 'image.delete', 'category.delete', 'category.create', 'category.edit'],
 };
@@ -41,7 +42,10 @@ export function requirePermission(permission, { getCategoryId } = {}) {
   return async (req, res, next) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Not authenticated' });
-    if (user.role === 'admin' || user.permissions?.includes('*')) return next();
+    if (user.role === 'admin' || user.permissions?.includes('*')) {
+      req.categoryId = await defaultResolveCategoryId(req).catch(() => null);
+      return next();
+    }
 
     let categoryId;
     try {
@@ -57,12 +61,35 @@ export function requirePermission(permission, { getCategoryId } = {}) {
         [user.id, categoryId]
       );
       const level = row?.level;
-      if (level && LEVEL_PERMISSIONS[level]?.includes(permission)) return next();
+      if (level && LEVEL_PERMISSIONS[level]?.includes(permission)) {
+        req.categoryId = categoryId;
+        return next();
+      }
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }
     res.status(403).json({ error: `Missing permission: ${permission}` });
   };
+}
+
+/**
+ * Standalone permission check (for use inside route handlers, not as middleware).
+ * Returns true if the user is an admin, or has a CategoryPermission row granting
+ * the requested permission on the given category.
+ */
+export async function checkPermission(user, categoryId, permission) {
+  if (!user) return false;
+  if (user.role === 'admin' || user.permissions?.includes('*')) return true;
+  if (categoryId == null) return false;
+  try {
+    const [[row]] = await pool.query(
+      'SELECT level FROM CategoryPermission WHERE user_id = ? AND category_id = ?',
+      [user.id, categoryId]
+    );
+    return Boolean(row?.level && LEVEL_PERMISSIONS[row.level]?.includes(permission));
+  } catch (error) {
+    return false;
+  }
 }
 
 export function requireAdmin(req, res, next) {
