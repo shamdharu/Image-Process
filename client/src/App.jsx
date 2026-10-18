@@ -3134,6 +3134,10 @@ function App() {
   // Restore the session cookie on load. Until /api/me answers there is no user,
   // and the workspace must not render or it fires unauthenticated requests.
   useEffect(() => {
+    if (!apiBaseUrl) {
+      setAuthChecked(true);
+      return;
+    }
     apiFetch("/api/me")
       .then((response) => (response.ok ? response.json() : null))
       .then((me) => setUser(me))

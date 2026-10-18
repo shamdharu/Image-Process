@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Aperture, LogIn, UserPlus } from 'lucide-react'
-import { apiUrl } from './api'
+import { apiBaseUrl, apiUrl } from './api'
 import './Loginpage.css'
 
 export default function LoginPage({ onLogin }) {
@@ -61,9 +61,10 @@ export default function LoginPage({ onLogin }) {
         <label className="dialog-label">Password
           <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Your password" />
         </label>
+        {!apiBaseUrl && <p className="login-notice">Preview only: connect a backend to enable sign in and account creation.</p>}
         {error && <p className="login-error">{error}</p>}
         {notice && <p className="login-notice">{notice}</p>}
-        <button className="upload-button login-submit" type="submit" disabled={submitting || !identifier.trim() || !password}>
+        <button className="upload-button login-submit" type="submit" disabled={!apiBaseUrl || submitting || !identifier.trim() || !password}>
           {isSignup ? <UserPlus size={15} /> : <LogIn size={15} />} {submitting ? 'Please wait…' : isSignup ? 'Create account' : 'Sign in'}
         </button>
         <button className="login-switch" type="button" onClick={() => { setIsSignup((value) => !value); setError(''); setNotice(''); setPassword('') }}>
