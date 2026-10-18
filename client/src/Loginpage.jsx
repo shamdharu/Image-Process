@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Aperture, LogIn, UserPlus } from 'lucide-react'
+import { apiUrl } from './api'
 import './Loginpage.css'
 
 export default function LoginPage({ onLogin }) {
@@ -17,7 +18,7 @@ export default function LoginPage({ onLogin }) {
     setSubmitting(true)
     setError('')
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:4000'}/api/${isSignup ? 'signup' : 'login'}`, {
+      const response = await fetch(apiUrl(`/api/${isSignup ? 'signup' : 'login'}`), {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },

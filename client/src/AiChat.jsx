@@ -9,9 +9,10 @@ import {
   X,
 } from "lucide-react";
 import "./AiChat.css";
+import { apiUrl } from "./api";
 
 const apiFetch = (path, options = {}) =>
-  fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:4000'}${path}`, { credentials: "include", ...options });
+  fetch(apiUrl(path), { credentials: "include", ...options });
 
 function formatInline(text) {
   const pieces = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).filter(Boolean);

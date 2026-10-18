@@ -21,9 +21,10 @@ import Taskbar from "./Taskbar";
 import "./AdminDashboard.css";
 import "./AdminModal.css";
 import "./AdminLayout.css";
+import { apiUrl } from "./api";
 
 const apiFetch = (path, options = {}) =>
-  fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:4000'}${path}`, { credentials: "include", ...options });
+  fetch(apiUrl(path), { credentials: "include", ...options });
 
 const levels = [
   ["none", "No access"],

@@ -44,6 +44,7 @@ import { menuConfig } from "./menuConfig";
 import LoginPage from "./Loginpage";
 import Home from "./Home";
 import AdminDashboard from "./AdminDashboard";
+import { apiBaseUrl, apiUrl } from "./api";
 import "./App.css";
 
 const categoryKey = (number) => String(number).padStart(2, "0");
@@ -93,13 +94,13 @@ const tileSource = (image, size, resolution = null) => {
   const fallback =
     previewSizes.find((item) => item.key === size)?.variant || "web";
   const variant = resolution || fallback;
-  return variant && typeof image.id === "number"
-    ? `${import.meta.env.VITE_API_URL || 'http://localhost:4000'}/api/variants/${image.id}/${variant}`
+  return apiBaseUrl && variant && typeof image.id === "number"
+    ? `${apiBaseUrl}/api/variants/${image.id}/${variant}`
     : image.src;
 };
 const fullSource = (image) =>
-  typeof image.id === "number"
-    ? `${import.meta.env.VITE_API_URL || 'http://localhost:4000'}/api/variants/${image.id}/hd`
+  apiBaseUrl && typeof image.id === "number"
+    ? `${apiBaseUrl}/api/variants/${image.id}/hd`
     : image.src;
 
 // Document ids mirror normalizeDocumentId() on the server: trimmed, and blank
@@ -163,7 +164,7 @@ function useMenuPlacement(anchor, menuRef, open) {
 // Without credentials:'include' the browser strips the cookie and the server's
 // requireAuth/requirePermission middleware answers 401 Unauthorized.
 const apiFetch = (path, options = {}) =>
-  fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:4000'}${path}`, { credentials: "include", ...options });
+  fetch(apiUrl(path), { credentials: "include", ...options });
 
 // Mirrors EMAIL_PATTERN in server/src/routes/users.js.
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -3205,7 +3206,9 @@ function App() {
           documentId: item.document_id || "",
           size: Number(item.file_size),
           date: new Date(item.created_at).toLocaleString(),
-          src: `${import.meta.env.VITE_API_URL || 'http://localhost:4000'}/api/variants/${item.id}/web`,
+          src: apiBaseUrl
+            ? `${apiBaseUrl}/api/variants/${item.id}/web`
+            : item.src,
           category: selectedCategory,
         }));
         setImages((current) => {
@@ -3985,8 +3988,8 @@ function App() {
     if (!target) return false;
     try {
       const originalUrl =
-        typeof target.id === "number"
-          ? `${import.meta.env.VITE_API_URL || 'http://localhost:4000'}/api/variants/${target.id}/original`
+        apiBaseUrl && typeof target.id === "number"
+          ? `${apiBaseUrl}/api/variants/${target.id}/original`
           : target.src;
       const sourceUrl =
         format === "original" || format === "heic" ? originalUrl : target.src;

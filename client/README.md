@@ -17,6 +17,10 @@ HTTPS base URL of the separately hosted API (for example,
 any Preview environments that need to access the API. Vite embeds this value
 at build time, so redeploy after changing it.
 
+Do not use a sample or placeholder URL. If the API is not deployed yet, leave
+`VITE_API_URL` unset; API-dependent features will show a configuration error
+until a real API URL is provided.
+
 The API must allow the deployed Vercel origin through its `CORS_ORIGIN`
 environment variable and run with `NODE_ENV=production` so cross-site session
 cookies use secure settings. The client cannot provide database or file-storage
