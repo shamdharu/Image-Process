@@ -1,16 +1,41 @@
-# React + Vite
+# Imagery client
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React and Vite frontend for the Imagery Workspace.
 
-Currently, two official plugins are available:
+## Deploy to Vercel
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Import the repository into Vercel and set the project **Root Directory** to
+`client`. Vercel uses the settings in `vercel.json`:
 
-## React Compiler
+- Build command: `npm run build`
+- Output directory: `dist`
+- Framework: Vite
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Set `VITE_API_URL` in the Vercel project's environment variables to the
+HTTPS base URL of the separately hosted API (for example,
+`https://api.example.com`, with no trailing slash). Apply it to Production and
+any Preview environments that need to access the API. Vite embeds this value
+at build time, so redeploy after changing it.
 
-## Expanding the Oxlint configuration
+The API must allow the deployed Vercel origin through its `CORS_ORIGIN`
+environment variable and run with `NODE_ENV=production` so cross-site session
+cookies use secure settings. The client cannot provide database or file-storage
+services; those remain part of the API deployment.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+## Local development
+
+Install the client dependencies and start Vite:
+
+```sh
+npm install
+npm run dev
+```
+
+Set `VITE_API_URL` in a local `.env.local` file to the API URL when it is not
+running at `http://localhost:4000`.
+
+Run a production build locally with:
+
+```sh
+npm run build
+```

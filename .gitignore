@@ -5,7 +5,6 @@ server/node_modules/
 server/storage/
 .env
 .env.example
-package-lock.json
+/package-lock.json
 
 scehma.sql
-
